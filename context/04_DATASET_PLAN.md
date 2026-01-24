@@ -8,6 +8,7 @@ This project uses the **“Online Payments Fraud Detection Dataset”** from Kag
 
 - **Name**: Online Payments Fraud Detection Dataset
 - **Platform**: Kaggle
+- **Slug**: `rupakroy/online-payments-fraud-detection-dataset`
 - **Typical columns**:
 
   - `step`
@@ -22,7 +23,12 @@ This project uses the **“Online Payments Fraud Detection Dataset”** from Kag
   - `isFraud`
   - `isFlaggedFraud`
 
-The exact schema should be verified in the EDA notebook and documented here as we progress.
+The exact schema is captured at ingest time in:
+
+- `data/processed/transactions_full_schema.json`
+- `data/processed/data_profile.json`
+
+and should be kept consistent with this document as the pipeline evolves.
 
 ---
 
@@ -50,26 +56,30 @@ We will use this dataset for:
 
 ---
 
-## 3. Entity mapping proposal
+## 3. Entity mapping (Step 1+2 baseline)
 
-Proposed mapping from raw columns to domain entities (to be refined later):
+Based on Step 1/2 pipelines, we adopt the following mapping from raw columns to domain entities:
 
 - **Customer / account entities**:
   - `customer_id` → `nameOrig`
   - `account_id` → `nameOrig`
-- **Counterparty entities**:
-  - `counterparty_id` → `nameDest`
-- **Device / composite entities** (placeholder hashes):
-  - `device_id` → `hash(nameOrig + nameDest)`
-- **Geo / cell entities**:
-  - `geo_cell_id` → `hash(nameDest)` (placeholder; real geo features may require external data)
+- **Merchant / counterparty entities**:
+  - `merchant_id` → `nameDest`
+- **Device / composite entities** (hashed IDs):
+  - `device_id` → deterministic hash of `nameOrig + "|" + nameDest`
+- **Geo / cell entities** (hashed IDs):
+  - `geo_cell_id` → deterministic hash of `nameDest`
 
 Notes:
 
-- We use hashes for entities where we do not have explicit IDs in the dataset.
-- The hashing mechanism should be stable and deterministic across offline and online paths.
+- The hashing mechanism is implemented in `pipelines/data_ingest.py` and must remain
+  deterministic and stable across offline and online paths.
+- These IDs are used consistently in:
+  - `data/processed/transactions_clean.parquet`
+  - `data/processed/*_features.parquet`
+  - `feature_repo/entities.py`
 
-This mapping will inform Feast `Entity` definitions and how we key feature tables.
+This mapping drives Feast `Entity` definitions and how we key feature tables.
 
 ---
 
@@ -98,37 +108,56 @@ We anticipate at least these feature categories:
    - Understand the relationship between `isFraud` and `isFlaggedFraud`.
    - Create features capturing “flagged but not fraud” behavior.
 
-These will be articulated and refined in the EDA notebook:
-`notebooks/00_eda_feature_store_story.ipynb`.
+In Step 1 entity tables (`pipelines/build_entity_tables.py`), we start with simple
+snapshot aggregates per entity:
+
+- `txn_count_total`
+- `amount_sum_total`
+- `amount_mean`
+- `amount_max`
+- `fraud_rate` (mean of `isFraud`)
+- `flagged_rate` (mean of `isFlaggedFraud`)
+- `unique_counterparty_count`
+
+These are later exposed via Feast `FeatureView`s.
 
 ---
 
 ## 5. Data access and governance
 
-Step 0 focuses on **documentation and scaffolding**, not actual data ingestion.
-
 Implementation notes:
 
-- Data will be downloaded manually or via the Kaggle API using:
-  - `scripts/kaggle_download.md` as a guide.
+- Data is downloaded manually or via the Kaggle API using:
+  - `scripts/kaggle_download.sh`
+  - `scripts/kaggle_download.md`
 - **Do not commit raw data** to this repository.
-- Keep any local data files under a dedicated `data/` directory (ignored by `.gitignore`).
+- Keep any local data files under the `data/` directory (ignored by `.gitignore`).
+- The ingest pipeline (`pipelines/data_ingest.py`) is responsible for:
+  - Enforcing schema and dtypes.
+  - Dropping impossible rows (negative balances/amounts).
+  - Writing:
+    - `transactions_clean.parquet`
+    - `transactions_full_schema.json`
+    - `data_profile.json`
 
-In later steps, we may:
-
-- Persist cleaned/feature-ready datasets as parquet files.
-- Introduce a small, anonymized sample for quick tests, still respecting license terms.
+We may later introduce small, anonymized samples for quick tests, still respecting license terms.
 
 ---
 
-## 6. Integration with Feast (future)
+## 6. Integration with Feast
 
-Later, we will:
+In Step 2, we connect this dataset to Feast by:
 
-1. Define Feast **entities** based on the mapping above.
-2. Create **FeatureViews** that:
-   - Pull from batch sources (Kaggle-derived tables/files).
-   - Optionally consume from streaming sources (Kafka/Redpanda).
-3. Materialize features to the Postgres online store used by the FastAPI service.
+1. Defining Feast **entities** (`feature_repo/entities.py`) based on the IDs above.
+2. Creating **FileSources** that point at the processed parquet tables
+   (`feature_repo/data_sources.py`).
+3. Creating **FeatureViews** that expose the snapshot aggregates per entity
+   (`feature_repo/feature_views.py`).
+4. Materializing features to the Postgres online store used by the FastAPI service.
 
-The feature definitions should be tightly aligned with the narrative in the EDA notebook and the metrics in `context/05_METRICS_AND_EVAL.md`.
+The feature definitions are intended to remain aligned with:
+
+- The narrative in the EDA notebook:
+  - `notebooks/01_kaggle_eda_and_baseline.ipynb`
+- The metrics and evaluation strategy in:
+  - `context/05_METRICS_AND_EVAL.md`.

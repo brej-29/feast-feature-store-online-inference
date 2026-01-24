@@ -30,9 +30,14 @@ dist/
 
 # Data / artifacts
 data/
+data/raw/
+data/processed/
 outputs/
 models/
 artifacts/
+
+# Archives
+*.zip
 
 # Kaggle credentials
 kaggle.json

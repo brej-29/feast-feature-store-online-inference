@@ -1,9 +1,11 @@
 import logging
+import os
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
+from feast import FeatureStore
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel
 
@@ -27,6 +29,9 @@ REQUEST_COUNT = Counter(
     ["endpoint", "http_status"],
 )
 
+_FEATURE_STORE: Optional[FeatureStore] = None
+FEAST_REPO_PATH = os.getenv("FEAST_REPO_PATH", "feature_repo")
+
 
 class PredictInput(BaseModel):
     entity_ids: Dict[str, Any]
@@ -40,12 +45,31 @@ class PredictOutput(BaseModel):
     debug_info: Optional[Dict[str, Any]] = None
 
 
+class OnlineFeaturesEntityRow(BaseModel):
+    customer_id: str
+
+
+class OnlineFeaturesRequest(BaseModel):
+    entity_rows: List[OnlineFeaturesEntityRow]
+
+
 app = FastAPI(
     title="Feast Fraud Feature Store API",
     version="0.0.1",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
 )
+
+
+def get_feature_store() -> FeatureStore:
+    global _FEATURE_STORE
+    if _FEATURE_STORE is None:
+        logger.info(
+            "Initializing FeatureStore for API usage",
+            extra={"repo_path": FEAST_REPO_PATH},
+        )
+        _FEATURE_STORE = FeatureStore(repo_path=FEAST_REPO_PATH)
+    return _FEATURE_STORE
 
 
 @app.middleware("http")
@@ -162,3 +186,83 @@ async def predict(payload: PredictInput) -> PredictOutput:
             "note": "Stub implementation; replace with real model and Feast features.",
         },
     )
+
+
+@app.get("/api/feast/health")
+async def feast_health() -> Dict[str, str]:
+    """
+    Health check for Feast integration.
+
+    Attempts to initialize the FeatureStore and list entities.
+    """
+    try:
+        store = get_feature_store()
+        entities = store.list_entities()
+        logger.info(
+            "feast_health_ok",
+            extra={"entity_count": len(entities)},
+        )
+        return {"status": "ok", "entities": [e.name for e in entities]}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("feast_health_failed", extra={"error": str(exc)})
+        raise HTTPException(
+            status_code=500,
+            detail="Feast feature store not available; check registry and Postgres configuration.",
+        ) from exc
+
+
+@app.post("/api/features/online")
+async def get_online_features(body: OnlineFeaturesRequest) -> Dict[str, Any]:
+    """
+    Fetch online features for a list of customer entity rows.
+
+    This is a minimal endpoint used to validate end-to-end Feast + Postgres wiring.
+    It gracefully returns 500 errors if the feature store or online store is not
+    available, so tests do not require Postgres to be running.
+    """
+    if not body.entity_rows:
+        raise HTTPException(status_code=400, detail="entity_rows must not be empty")
+
+    try:
+        store = get_feature_store()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("feature_store_init_failed", extra={"error": str(exc)})
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to initialize FeatureStore; ensure registry and configuration exist.",
+        ) from exc
+
+    entity_dicts = [row.dict() for row in body.entity_rows]
+
+    try:
+        feature_names = [
+            "customer_profile_v1:txn_count_total",
+            "customer_profile_v1:amount_sum_total",
+            "customer_profile_v1:amount_mean",
+            "customer_profile_v1:amount_max",
+            "customer_profile_v1:fraud_rate",
+            "customer_profile_v1:flagged_rate",
+            "customer_profile_v1:unique_counterparty_count",
+            "customer_realtime_v1:last_txn_amount",
+            "customer_realtime_v1:last_txn_type_code",
+            "customer_realtime_v1:last_txn_hour",
+            "customer_realtime_v1:last_txn_is_flagged",
+        ]
+
+        result = store.get_online_features(
+            features=feature_names,
+            entity_rows=entity_dicts,
+        ).to_dict()
+
+        logger.info(
+            "online_features_fetched",
+            extra={"entity_count": len(entity_dicts)},
+        )
+
+        return {"features": result}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("get_online_features_failed", extra={"error": str(exc)})
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to fetch online features; ensure Feast has been applied and materialized.",
+        ) from exc

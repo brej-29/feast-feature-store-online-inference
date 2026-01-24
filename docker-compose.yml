@@ -13,7 +13,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -48,6 +48,15 @@ services:
     container_name: feast-fraud-stack
     env_file:
       - .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-feature_store}
+      POSTGRES_USER: ${POSTGRES_USER:-feature_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-feature_pass}
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_TOPIC: txn_events
+      FEAST_REPO_PATH: feature_repo
     ports:
       - "7860:7860"
     depends_on:
@@ -55,6 +64,27 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_healthy
+
+  consumer:
+    build: .
+    container_name: feast-fraud-consumer
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-feature_store}
+      POSTGRES_USER: ${POSTGRES_USER:-feature_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-feature_pass}
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_TOPIC: txn_events
+      FEAST_REPO_PATH: feature_repo
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    command: ["python", "-m", "services.streaming.kafka_consumer"]
 
 volumes:
   postgres_data:

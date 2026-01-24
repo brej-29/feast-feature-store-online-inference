@@ -2,6 +2,10 @@
 
 This document describes how to download the **Online Payments Fraud Detection Dataset** from Kaggle for local use.
 
+Target dataset (Step 1/2):
+
+- Kaggle slug: **`rupakroy/online-payments-fraud-detection-dataset`**
+
 > Note: Do **not** commit any downloaded data files or your Kaggle API token to this repository.
 
 ---
@@ -22,14 +26,14 @@ pip install kaggle
 
 ## 2. Configure your Kaggle API token
 
-1. Go to https://www.kaggle.com/&lt;your-username&gt;/account
+1. Go to https://www.kaggle.com/<your-username>/account
 2. Under **API**, click **Create New API Token**.
 3. This downloads a file named `kaggle.json`.
 
 Place the file in:
 
 - **Linux/macOS**: `~/.kaggle/kaggle.json`
-- **Windows**: `C:\Users&lt;User&gt;\.kaggle\kaggle.json`
+- **Windows**: `C:\Users\<User>\.kaggle\kaggle.json`
 
 Or place it in the project root and export:
 
@@ -37,44 +41,59 @@ Or place it in the project root and export:
 export KAGGLE_CONFIG_DIR=$(pwd)
 ```
 
-> `.gitignore` is configured to ignore `kaggle.json`.  
+Set restrictive permissions (recommended):
+
+```bash
+chmod 600 ~/.kaggle/kaggle.json
+# or, if using the project root:
+chmod 600 ./kaggle.json
+```
+
+> `.gitignore` is configured to ignore `kaggle.json` and `data/` directories.  
 > Never commit `kaggle.json` or any secrets to version control.
 
 ---
 
-## 3. Downloading the dataset
+## 3. Downloading the dataset (rupakroy)
 
-The exact Kaggle dataset slug may vary; at the time of writing, one common dataset is:
-
-- Name: **Online Payments Fraud Detection Dataset**
-
-Once you know the dataset slug (for example `mishra5001/online-payments-fraud-detection-dataset`),
-you can download it as follows:
+Create a raw-data directory and download the dataset:
 
 ```bash
-# Example: adjust the dataset slug as needed
-kaggle datasets download -d mishra5001/online-payments-fraud-detection-dataset -p data/raw --unzip
+mkdir -p data/raw
+
+kaggle datasets download \
+  -d rupakroy/online-payments-fraud-detection-dataset \
+  -p data/raw \
+  --unzip
 ```
 
-This will download and unzip the dataset under `data/raw/`.
+After running this, you should see one or more CSV files in `data/raw/`.  
+The ingest pipeline in `pipelines/data_ingest.py` will take `--raw_path` pointing at one of these CSV files.
 
-Directory layout suggestion:
+Suggested directory layout:
 
 ```text
 data/
   raw/
-    onlinefraud.csv           # or actual dataset filename(s)
-  interim/
+    online-payments-fraud-detection-dataset.csv    # or actual filename from Kaggle
   processed/
+    transactions_clean.parquet
+    customer_features.parquet
+    merchant_features.parquet
+    device_features.parquet
+    account_features.parquet
+    geocell_features.parquet
 ```
 
 ---
 
 ## 4. Usage in notebooks and pipelines
 
-- Point your EDA notebook (`notebooks/00_eda_feature_store_story.ipynb`) to read from `data/raw/`.
-- Keep any data cleaning and feature engineering logic in code or notebooks, not as manual spreadsheet edits.
-- If you generate derived datasets (e.g., train/validation/test), store them under `data/processed/`.
+- The ingest pipeline (`pipelines/data_ingest.py`) reads from `data/raw/` and writes to `data/processed/`.
+- The entity table builder (`pipelines/build_entity_tables.py`) also writes to `data/processed/`.
+- EDA notebooks:
+  - `notebooks/01_kaggle_eda_and_baseline.ipynb` will read from `data/processed/transactions_clean.parquet`.
+- Keep cleaning and feature engineering logic in code or notebooks, not as manual spreadsheet edits.
 
 ---
 

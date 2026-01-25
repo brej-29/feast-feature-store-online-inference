@@ -59,11 +59,16 @@ def _clean_and_augment(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = df[col].astype(str).str.strip()
 
     # Cast numeric columns
+    # NOTE: column names follow the Kaggle schema:
+    # - oldbalanceOrg
+    # - newbalanceOrig
+    # - oldbalanceDest
+    # - newbalanceDest
     numeric_cols = [
         "step",
         "amount",
         "oldbalanceOrg",
-        "newbalanceOrg",
+        "newbalanceOrig",
         "oldbalanceDest",
         "newbalanceDest",
     ]

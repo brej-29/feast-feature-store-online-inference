@@ -101,7 +101,6 @@ geocell_profile_v1 = FeatureView(
 customer_realtime_push = PushSource(
     name="customer_realtime_push",
     batch_source=customer_features_source,
-    stream_source=None,
 )
 
 customer_realtime_v1 = FeatureView(

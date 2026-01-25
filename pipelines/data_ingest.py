@@ -80,10 +80,11 @@ def _clean_and_augment(df: pd.DataFrame) -> pd.DataFrame:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype("int64")
 
     # Drop impossible rows (negative amounts or balances)
+    # Note: Kaggle column is newbalanceOrig (not newbalanceOrg).
     mask_impossible = (
         (df["amount"] < 0)
         | (df["oldbalanceOrg"] < 0)
-        | (df["newbalanceOrg"] < 0)
+        | (df["newbalanceOrig"] < 0)
         | (df["oldbalanceDest"] < 0)
         | (df["newbalanceDest"] < 0)
     )

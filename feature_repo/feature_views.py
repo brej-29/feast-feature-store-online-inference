@@ -3,14 +3,14 @@ from datetime import timedelta
 from feast import FeatureView, Field, PushSource
 from feast.types import Float32, Int64
 
-from .data_sources import (
+from data_sources import (
     account_features_source,
     customer_features_source,
     device_features_source,
     geocell_features_source,
     merchant_features_source,
 )
-from .entities import account, customer, device, geocell, merchant
+from entities import account, customer, device, geocell, merchant
 
 
 customer_profile_v1 = FeatureView(

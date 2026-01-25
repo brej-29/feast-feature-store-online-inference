@@ -1,5 +1,5 @@
 project: fraud_feature_store
-registry: feature_repo/data/registry.db
+registry: data/registry.db
 provider: local
 
 online_store:

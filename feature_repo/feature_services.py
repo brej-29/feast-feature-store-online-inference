@@ -1,6 +1,6 @@
 from feast import FeatureService
 
-from .feature_views import (
+from feature_views import (
     account_profile_v1,
     customer_profile_v1,
     customer_realtime_v1,

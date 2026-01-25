@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eu
 
 log() {
   echo "[$(date --iso-8601=seconds)] $*"

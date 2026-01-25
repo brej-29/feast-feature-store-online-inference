@@ -19,7 +19,7 @@ services:
       retries: 5
 
   redpanda:
-    image: docker.redpanda.com/redpanda/redpanda:v23.1.17
+    image: redpandadata/redpanda:v23.1.17
     container_name: feast-fraud-redpanda
     command:
       - redpanda

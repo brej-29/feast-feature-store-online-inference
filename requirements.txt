@@ -4,7 +4,8 @@ gradio==4.44.0
 requests==2.32.3
 prometheus_client==0.20.0
 python-dotenv==1.0.1
-pydantic==2.8.2
+# Use a pydantic version compatible with FastAPI, Gradio, and Feast
+pydantic>=2.10.6,<3.0.0
 pandas==2.2.3
 numpy==2.1.3
 # Allow Feast to choose a compatible pyarrow version (>=21.0.0)

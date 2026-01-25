@@ -1,5 +1,10 @@
 fastapi==0.111.0
-uvicorn[standard]==0.30.1
+# Uvicorn constraints:
+# - FastAPI 0.111.0:    uvicorn>=0.12.0
+# - Gradio 4.44.0:      uvicorn>=0.14.0
+# - Feast 0.59.0:       uvicorn>=0.30.6,<=0.34.0
+# Choose a version in the intersection: [0.30.6, 0.34.0]
+uvicorn[standard]==0.30.6
 gradio==4.44.0
 requests==2.32.3
 prometheus_client==0.20.0

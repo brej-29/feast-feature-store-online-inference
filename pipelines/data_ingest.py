@@ -284,7 +284,7 @@ def main(cli_args: Optional[List[str]] = None) -> None:
         args = parse_args(cli_args)
 
         sample_rows: Optional[int]
-        if args.sample_rows is not None and args.sample_rows &lt; 0:
+        if args.sample_rows is not None and args.sample_rows < 0:
             sample_rows = None
         else:
             sample_rows = args.sample_rows

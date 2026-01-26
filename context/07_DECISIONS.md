@@ -179,3 +179,91 @@ Each decision should have:
     scheme and timestamp logic to keep entity keys consistent.
   - Any future changes to hashing or timestamp logic must be treated as breaking
     changes and recorded here.
+
+---
+
+## D005 – Windowed feature engineering and leakage-aware design
+
+- **Date**: 2026-01-26
+- **Status**: accepted
+- **Context**:
+  - We want production-style, time-windowed features (velocity, balance dynamics,
+    cross-entity consistency) for multiple entities while avoiding label leakage from
+    the future into the past.
+  - The Kaggle dataset provides event timestamps (derived from `step`) and fraud
+    labels (`isFraud`, `isFlaggedFraud`), and we already have entity IDs per D004.
+- **Options considered**:
+  - **Option A** – Build only static per-entity aggregates (one row per entity).
+    - Pros:
+      - Simple to compute and store.
+    - Cons:
+      - Loses temporal dynamics (recent velocity vs. long-term behaviour).
+      - Harder to support time-based model evaluation.
+  - **Option B** – Build fully dynamic, per-transaction features using time-based
+    rolling windows over sorted event time.
+    - Pros:
+      - Captures recent and longer-term behaviour (1h/6h/24h/7d windows).
+      - Naturally supports time-based train/validation splits.
+    - Cons:
+      - More complex and compute-intensive.
+- **Decision**:
+  - Adopt **Option B** with pandas-based time-windowed rolling features per entity:
+    - Customers: transaction counts and amount stats over multiple windows, unique
+      counterparties, night/weekend ratios, and high-risk type ratios.
+    - Merchants, devices, accounts, and geo cells: tailored velocity, balance, and
+      cross-entity features.
+  - Use only past and current information in the rolling windows (no lookahead),
+    to avoid label leakage from future transactions.
+  - Introduce an `OnDemandFeatureView` for request-time transforms (log-amount,
+    hour-of-day encodings, weekend/night flags, type codes) to keep client payloads
+    simple and reuse the same logic for historical and online retrieval.
+- **Consequences / Follow-ups**:
+  - `pipelines/feature_engineering.py` is now the canonical place for engineered
+    feature definitions; changes here must remain time-respecting and be reflected in
+    the Feast `FeatureView` schemas.
+  - Training and serving should both rely on `risk_scoring_v1` FeatureService, which
+    bundles multi-entity features and on-demand transforms.
+  - Any future change to window definitions or feature semantics must be recorded
+    as a new decision (e.g., D006+) and treated as a versioned change to the
+    feature tables and FeatureViews.
+
+---
+
+## D006 – Training pipeline, metrics, and threshold selection
+
+- **Date**: 2026-01-26
+- **Status**: accepted
+- **Context**:
+  - We need a reproducible training pipeline that uses the same Feast feature
+    definitions as online serving and provides fraud-focused metrics.
+  - The primary evaluation metric should be PR-AUC, with ROC-AUC as secondary
+    and clear precision/recall/F1 at an operational threshold.
+- **Options considered**:
+  - **Option A** – Ad-hoc notebooks only, with manual feature joins.
+    - Cons:
+      - Easy to drift away from serving-time feature definitions.
+      - Harder to reproduce training runs from CI.
+  - **Option B** – Scripted pipeline using `FeatureStore.get_historical_features`
+    and a simple model, with metadata and metrics logged to disk.
+    - Pros:
+      - Ensures parity with serving-time FeatureServices.
+      - Easy to plug into CI or scheduled jobs.
+- **Decision**:
+  - Adopt **Option B**:
+    - Implement `pipelines/train_model.py` that:
+      - Loads `transactions_clean.parquet`.
+      - Builds `entity_df` and calls `get_historical_features` on `risk_scoring_v1`.
+      - Splits train/validation **by time** (not random).
+      - Trains a logistic regression with `class_weight='balanced'`.
+      - Chooses a decision threshold targeting ~0.9 precision on the validation set.
+      - Computes PR-AUC, ROC-AUC, precision, recall, F1, and confusion matrix.
+      - Computes permutation feature importance on the validation split.
+      - Writes `models/model.joblib`, `models/model_metadata.json`,
+        `models/feature_importance.csv`, and a human-readable model card.
+- **Consequences / Follow-ups**:
+  - Serving must read `model_metadata.json` to know the feature ordering and
+    decision threshold used during training.
+  - Future model versions (e.g., tree-based, calibrated models) should follow the
+    same artifact schema and decision logging pattern.
+  - CI and scheduled jobs can call the training pipeline to refresh models when
+    new data appears.

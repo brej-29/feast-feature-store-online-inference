@@ -1,0 +1,6 @@
+# Ignore data and environment-specific artifacts inside the feature repo
+data/
+notebooks/
+.venv/
+__pycache__/
+*.py[cod]

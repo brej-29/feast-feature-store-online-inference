@@ -1,0 +1,14 @@
+project: fraud_feature_store
+registry: data/registry.db
+provider: local
+
+online_store:
+  type: postgres
+  host: ${POSTGRES_HOST}
+  port: ${POSTGRES_PORT}
+  database: ${POSTGRES_DB}
+  db_schema: public
+  user: ${POSTGRES_USER}
+  password: ${POSTGRES_PASSWORD}
+  sslmode: disable
+  vector_enabled: false

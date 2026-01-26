@@ -15,23 +15,107 @@ Use reverse chronological order (newest at the top).
 ## Template
 
 ```markdown
-## Step X – <short title>
+## Step X – &lt;short title&gt;
 - **Date**: YYYY-MM-DD
-- **Agent**: <human or Cosine AI identifier>
+- **Agent**: &lt;human or Cosine AI identifier&gt;
 - **Context used**:
   - context/00_PROJECT_GOAL.md
   - context/01_ARCHITECTURE.md
   - context/02_FREE_TIER_CONSTRAINTS.md
   - context/03_COSINE_TASK_PROTOCOL.md
-  - <any others>
+  - &lt;any others&gt;
 - **Summary**:
-  - <bullet list of key changes>
+  - &lt;bullet list of key changes&gt;
 - **Files touched (high level)**:
-  - <path 1>
-  - <path 2>
+  - &lt;path 1&gt;
+  - &lt;path 2&gt;
 - **Decisions referenced/added**:
-  - D00X – <short description>
+  - D00X – &lt;short description&gt;
 ```
+
+---
+
+## Step 5–8 – Training pipeline, online serving, performance, and monitoring
+
+- **Date**: 2026-01-26
+- **Agent**: Cosine AI (Genie)
+- **Context used**:
+  - context/00_PROJECT_GOAL.md
+  - context/01_ARCHITECTURE.md
+  - context/02_FREE_TIER_CONSTRAINTS.md
+  - context/03_COSINE_TASK_PROTOCOL.md
+  - context/04_DATASET_PLAN.md
+  - context/05_METRICS_AND_EVAL.md
+  - context/07_DECISIONS.md
+- **Summary**:
+  - Implemented `pipelines/train_model.py` to train a logistic regression model using Feast `risk_scoring_v1` features, with time-based train/validation split, PR-AUC/ROC-AUC metrics, threshold selection targeting high precision, and permutation feature importance.
+  - Added model artifacts under `models/` (`model.joblib`, `model_metadata.json`, `feature_importance.csv`) and a lightweight model card; created tests to validate metadata schema.
+  - Upgraded FastAPI `/api/predict` to use Feast online features + trained model, returning structured latency breakdowns and wiring to the Gradio UI; added `/api/health` and `/api/push` for scoped health checks and realtime Feast pushes.
+  - Extended the Gradio app (`app.py`) to map raw inputs into entity IDs consistent with the offline pipeline and to display prediction + latency information.
+  - Introduced load/performance tooling: `load_tests/locustfile.py`, `scripts/benchmark_predict.py`, and `docs/performance_testing.md`.
+  - Added a drift reporting script (`monitoring/drift_report.py`) using Evidently, plus a GitHub Actions workflow (`.github/workflows/drift.yml`) that generates and uploads drift reports as artifacts.
+  - Documented operational materialization (`docs/ops_materialization.md`), HF deployment (`docs/HF_DEPLOYMENT.md`, `deploy/SPACE_README.md`), and refined `.env.example` for local vs. managed Postgres/Kafka settings.
+- **Files touched (high level)**:
+  - `pipelines/train_model.py`
+  - `models/*` (generated artifacts, not committed)
+  - `services/api/app/main.py`
+  - `app.py`
+  - `scripts/feast_materialize_incremental.sh`
+  - `.github/workflows/materialize.yml`
+  - `monitoring/drift_report.py`
+  - `.github/workflows/drift.yml`
+  - `load_tests/locustfile.py`
+  - `scripts/benchmark_predict.py`
+  - `scripts/kafka_seed_events.py`
+  - `docs/ops_materialization.md`
+  - `docs/performance_testing.md`
+  - `docs/HF_DEPLOYMENT.md`
+  - `deploy/SPACE_README.md`
+  - `.env.example`
+  - `requirements.txt`
+  - `tests/test_api_contracts.py`
+  - `tests/test_predict_route_smoke.py`
+  - `tests/test_model_artifact_schema.py`
+  - `tests/test_train_pipeline_import.py`
+- **Decisions referenced/added**:
+  - D005 – Windowed feature engineering and leakage-aware design.
+  - D006 – Training pipeline, metrics, and threshold selection.
+
+---
+
+## Step 3 – Windowed feature engineering, Feast feature services, and training-ready catalog
+
+- **Date**: 2026-01-26
+- **Agent**: Cosine AI (Genie)
+- **Context used**:
+  - context/00_PROJECT_GOAL.md
+  - context/01_ARCHITECTURE.md
+  - context/02_FREE_TIER_CONSTRAINTS.md
+  - context/03_COSINE_TASK_PROTOCOL.md
+  - context/04_DATASET_PLAN.md
+  - context/05_METRICS_AND_EVAL.md
+  - context/07_DECISIONS.md
+- **Summary**:
+  - Implemented `pipelines/feature_engineering.py` to build windowed, production-style feature tables for five entities (customer, merchant, device, account, geo cell) with 50+ engineered features, sample-mode controls, and JSON schema snapshots.
+  - Added new Feast `FileSource`s for `*_features_v1.parquet` tables and corresponding `FeatureView`s (`*_features_fv_v1`) that expose velocity, balance, and cross-entity consistency features.
+  - Introduced an on-demand `RequestSource` and `OnDemandFeatureView` (`transaction_request_features`) for request-time transforms (log-amount, time-of-day sin/cos, weekend/night flags, type codes).
+  - Defined risk-scoring `FeatureService`s (`risk_scoring_v1`, `risk_scoring_v2`) bundling multi-entity features, realtime push-based features, and on-demand transforms.
+  - Added a feature catalog export script that introspects the Feast repo and writes `docs/feature_catalog.md`.
+  - Added lightweight tests ensuring feature tables (if present) expose at least 50 engineered feature columns and that the Feast repo modules (including on-demand views) import correctly.
+- **Files touched (high level)**:
+  - `pipelines/feature_engineering.py`
+  - `feature_repo/data_sources.py`
+  - `feature_repo/feature_views.py`
+  - `feature_repo/on_demand_feature_views.py`
+  - `feature_repo/feature_services.py`
+  - `scripts/export_feature_catalog.py`
+  - `docs/feature_catalog.md`
+  - `tests/test_feature_engineering_schema.py`
+  - `tests/test_feature_repo_imports.py`
+  - `README.md`
+- **Decisions referenced/added**:
+  - D004 – Entity and timestamp mapping for Feast.
+  - D005 – Window definitions and label-leakage-safe feature engineering.
 
 ---
 

@@ -35,6 +35,7 @@ data/processed/
 outputs/
 models/
 artifacts/
+docs/drift/
 
 # Archives
 *.zip

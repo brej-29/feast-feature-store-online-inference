@@ -83,6 +83,9 @@ services:
       KAFKA_BROKERS: redpanda:9092
       KAFKA_TOPIC: txn_events
       FEAST_REPO_PATH: feature_repo
+      CONSUMER_METRICS_PORT: 9100
+    ports:
+      - "9100:9100"
     depends_on:
       postgres:
         condition: service_healthy

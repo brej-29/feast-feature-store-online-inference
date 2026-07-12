@@ -51,6 +51,10 @@ def call_predict_api(
         fraud_prob = data.get("fraud_probability", 0.0)
         latency_ms = data.get("latency_ms", 0.0)
         model_version = data.get("model_version", "unknown")
+        is_fraud = data.get("is_fraud", False)
+        fetch_ms = data.get("feature_fetch_ms", 0.0)
+        infer_ms = data.get("inference_ms", 0.0)
+        degraded = (data.get("debug_info") or {}).get("degraded", False)
 
         logger.info(
             "prediction_response",
@@ -61,11 +65,17 @@ def call_predict_api(
             },
         )
 
-        return (
-            f"Fraud probability: {fraud_prob:.3f}\n"
-            f"Latency: {latency_ms:.1f} ms\n"
-            f"Model version: {model_version}"
-        )
+        verdict = "FRAUD ALERT" if is_fraud else "Looks legitimate"
+        lines = [
+            f"Verdict: {verdict}",
+            f"Fraud probability: {fraud_prob:.6f}",
+            f"Latency: {latency_ms:.1f} ms "
+            f"(features {fetch_ms:.1f} ms + inference {infer_ms:.1f} ms)",
+            f"Model version: {model_version}",
+        ]
+        if degraded:
+            lines.append("WARNING: online feature store unavailable; scored with request-time features only.")
+        return "\n".join(lines)
 
     except requests.RequestException as exc:
         logger.exception(
@@ -79,16 +89,19 @@ def build_interface() -> gr.Blocks:
     """
     Build the Gradio Blocks interface for the fraud prediction demo.
     """
-    with gr.Blocks(title="Feast Fraud Feature Store - Stub UI") as demo:
+    with gr.Blocks(title="Feast Fraud Feature Store") as demo:
         gr.Markdown(
             """
-# Online Payments Fraud (Stub)
+# Online Payments Fraud Detection
 
-This is a **Step 0** skeleton for a fraud detection UI.
+Real-time fraud scoring backed by a **Feast feature store**:
 
-- Calls a local FastAPI endpoint: `/api/predict`
-- Uses simple, fake logic for fraud probability
-- Will be wired to Feast + real models in later steps
+- `/api/predict` derives entity keys, fetches online features from the
+  Feast online store (Postgres), and scores with a gradient-boosted model
+  trained on point-in-time correct features
+- The response shows the latency split between feature retrieval and
+  model inference
+- Trained on **synthetic PaySim data** — see `models/MODEL_CARD.md`
 """
         )
 

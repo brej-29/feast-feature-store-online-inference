@@ -122,3 +122,37 @@ def test_model_info(model_bundle):
     body = response.json()
     assert body["model_version"] == "test_v0"
     assert body["n_feast_features"] == len(FEAST_FEATURES)
+
+
+def test_predict_allowed_without_api_key_when_unset(model_bundle, monkeypatch):
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.setattr(
+        api_main, "get_feature_store", lambda: (_ for _ in ()).throw(RuntimeError("no store"))
+    )
+    response = client.post("/api/predict", json=PAYLOAD)
+    assert response.status_code == 200
+
+
+def test_predict_rejects_missing_or_wrong_api_key(model_bundle, monkeypatch):
+    # No store/feature mocking needed: the API-key dependency runs before the
+    # route body, so these requests never reach the (network-touching) store.
+    monkeypatch.setenv("API_KEY", "secret123")
+    response = client.post("/api/predict", json=PAYLOAD)
+    assert response.status_code == 401
+    assert response.json()["request_id"]
+
+    response = client.post(
+        "/api/predict", json=PAYLOAD, headers={"X-API-Key": "wrong"}
+    )
+    assert response.status_code == 401
+
+
+def test_predict_allows_correct_api_key(model_bundle, monkeypatch):
+    monkeypatch.setenv("API_KEY", "secret123")
+    monkeypatch.setattr(
+        api_main, "get_feature_store", lambda: (_ for _ in ()).throw(RuntimeError("no store"))
+    )
+    response = client.post(
+        "/api/predict", json=PAYLOAD, headers={"X-API-Key": "secret123"}
+    )
+    assert response.status_code == 200

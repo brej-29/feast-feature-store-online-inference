@@ -1,35 +1,25 @@
 from feast import FeatureService
 
 from feature_views import (
-    account_profile_v1,
-    customer_profile_v1,
+    account_profile_v2,
+    customer_profile_v2,
     customer_realtime_v1,
-    device_profile_v1,
-    geocell_profile_v1,
-    merchant_profile_v1,
+    device_profile_v2,
+    geocell_profile_v2,
+    merchant_profile_v2,
 )
 
-customer_risk_service_v1 = FeatureService(
-    name="customer_risk_service_v1",
-    features=[customer_profile_v1, customer_realtime_v1],
-)
-
-merchant_risk_service_v1 = FeatureService(
-    name="merchant_risk_service_v1",
-    features=[merchant_profile_v1],
-)
-
-device_risk_service_v1 = FeatureService(
-    name="device_risk_service_v1",
-    features=[device_profile_v1],
-)
-
-account_risk_service_v1 = FeatureService(
-    name="account_risk_service_v1",
-    features=[account_profile_v1],
-)
-
-geocell_risk_service_v1 = FeatureService(
-    name="geocell_risk_service_v1",
-    features=[geocell_profile_v1],
+# Single service consumed by both the training pipeline
+# (get_historical_features) and the serving API (get_online_features), so the
+# model sees the same feature set in both worlds by construction.
+fraud_detection_v2 = FeatureService(
+    name="fraud_detection_v2",
+    features=[
+        customer_profile_v2,
+        merchant_profile_v2,
+        device_profile_v2,
+        account_profile_v2,
+        geocell_profile_v2,
+        customer_realtime_v1,
+    ],
 )

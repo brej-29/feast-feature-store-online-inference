@@ -35,6 +35,70 @@ Use reverse chronological order (newest at the top).
 
 ---
 
+## Step 5 – Phase 2: production hardening (CI, validation, observability, auth, calibration)
+
+- **Date**: 2026-07-12
+- **Agent**: Claude Code (with human review)
+- **Context used**:
+  - context/07_DECISIONS.md (D010)
+- **Summary**:
+  - **CI** (`.github/workflows/test.yml`): ruff (blocking), mypy (non-blocking
+    while the codebase adopts typing), pytest unit suite on push/PR; a
+    second job runs the Testcontainers integration suite. Fixed the ruff
+    findings this surfaced (deprecated `[tool.ruff]` top-level config moved
+    to `[tool.ruff.lint]`, one dead variable).
+  - **Data validation** (`pipelines/schemas.py`, `pandera`): cleaned
+    transactions are validated against a schema (required columns, known
+    transaction types, non-negative amounts/balances, isFraud/isFlaggedFraud
+    in {0,1}, tz-aware timestamps) before being written; fails loudly with
+    the specific failing rows instead of silently writing bad data downstream.
+  - **Correlation IDs**: `X-Request-ID` generated/propagated per request via
+    a contextvar, injected into every log line (including third-party
+    loggers like `feast.infra.registry`) via a handler-level logging filter,
+    and included in every error response body (both the unhandled-exception
+    path and all `HTTPException`s).
+  - **Streaming freshness metrics** (`services/streaming/feast_push.py`):
+    `feast_push_success_total`/`feast_push_failure_total` counters,
+    `feast_push_last_success_unixtime` gauge, and a
+    `feast_push_event_lag_seconds` histogram (age of the newest pushed event
+    at push time -- the actual Kafka-to-online-store freshness number). The
+    Kafka consumer now runs its own Prometheus HTTP server
+    (`CONSUMER_METRICS_PORT`, default 9100); wired into docker-compose and
+    `monitoring/prometheus.yml` as a second scrape target.
+  - **API key auth**: optional `X-API-Key` header check on `/api/predict`,
+    gated by the `API_KEY` env var (unset = disabled, for local dev). Gradio
+    UI reads the same var and attaches the header automatically.
+  - **Model calibration fix (D010)**: found and fixed a class-imbalance bug
+    in the production model -- see D010. PR-AUC 0.54 → 0.93,
+    `recall_at_precision_0.90` 0.0 → 0.84, sane operating threshold (0.97
+    instead of 0.9999999992). Retrained; `models/` artifacts updated.
+  - **Testcontainers integration test**
+    (`tests/test_integration_feast_path.py`): spins up an ephemeral Postgres,
+    applies a throwaway PushSource-backed feature view, pushes a row, and
+    reads it back online -- proves the realtime path against a real
+    Postgres, not mocks. Marked `integration`, excluded from the default
+    unit-test run.
+  - **`make demo`**: one command (idempotent, skips completed stages) that
+    brings up local Postgres, ingests data if needed, builds entity tables
+    if needed, applies + materializes Feast, trains if needed, and serves
+    the API + UI.
+  - Re-ingested with a fresh `--base_time recent` window (keeps the online
+    serving demo's "now" meaningful) and rebuilt/re-materialized entity
+    tables accordingly.
+- **Files touched (high level)**:
+  - `.github/workflows/test.yml` (new), `pyproject.toml` (ruff/mypy/pytest config)
+  - `pipelines/schemas.py` (new), `pipelines/data_ingest.py`
+  - `services/api/app/main.py` (correlation IDs, API key auth)
+  - `services/streaming/feast_push.py`, `services/streaming/kafka_consumer.py`
+  - `monitoring/prometheus.yml`, `docker-compose.yml`
+  - `pipelines/train_model.py` (class_weight="balanced")
+  - `tests/test_schemas.py`, `tests/test_integration_feast_path.py` (new)
+  - `Makefile` (`demo`, `test-integration` targets)
+- **Decisions referenced/added**:
+  - D010 – class_weight="balanced" on the fraud model.
+
+---
+
 ## Step 4 – Reconcile with a parallel PR merged directly to main
 
 - **Date**: 2026-07-12

@@ -15,23 +15,59 @@ Use reverse chronological order (newest at the top).
 ## Template
 
 ```markdown
-## Step X – <short title>
+## Step X – &lt;short title&gt;
 - **Date**: YYYY-MM-DD
-- **Agent**: <human or Cosine AI identifier>
+- **Agent**: &lt;human or Cosine AI identifier&gt;
 - **Context used**:
   - context/00_PROJECT_GOAL.md
   - context/01_ARCHITECTURE.md
   - context/02_FREE_TIER_CONSTRAINTS.md
   - context/03_COSINE_TASK_PROTOCOL.md
-  - <any others>
+  - &lt;any others&gt;
 - **Summary**:
-  - <bullet list of key changes>
+  - &lt;bullet list of key changes&gt;
 - **Files touched (high level)**:
-  - <path 1>
-  - <path 2>
+  - &lt;path 1&gt;
+  - &lt;path 2&gt;
 - **Decisions referenced/added**:
-  - D00X – <short description>
+  - D00X – &lt;short description&gt;
 ```
+
+---
+
+## Step 4 – Reconcile with a parallel PR merged directly to main
+
+- **Date**: 2026-07-12
+- **Agent**: Claude Code (with human review)
+- **Context used**:
+  - context/07_DECISIONS.md (D009)
+- **Summary**:
+  - While Step 3 (below) was in progress on its own branch, a separate PR
+    (`cosine/feat/step3-9-complete-project`) was merged directly to `main`,
+    adding a parallel feature-engineering/training/serving implementation
+    that reintroduced target leakage (see D009 for specifics).
+  - Merged `main` into this branch. Kept this branch's point-in-time correct
+    pipeline and `fraud_detection_v2` service as canonical; removed the
+    parallel implementation's leaky modules and their direct tests; kept its
+    genuinely additive, non-conflicting assets (CI workflows, drift
+    monitoring, load testing, feature catalog exporter), adapted to this
+    branch's commands and request schema.
+  - Removed docs that only documented the removed pipeline rather than
+    leaving them stale (`docs/ops_materialization.md`,
+    `docs/feature_importance.md`, `context/09_LOCAL_RUN_AND_TEST.md`) —
+    Phase 2/4 will write their replacements against the verified v2 commands.
+- **Files touched (high level)**:
+  - Removed: `pipelines/feature_engineering.py`, `feature_repo/on_demand_feature_views.py`,
+    `scripts/feast_materialize_incremental.sh`, `notebooks/02_training_and_feature_importance.ipynb`,
+    `tests/test_api_contracts.py`, `tests/test_feature_engineering_schema.py`,
+    `tests/test_model_artifact_schema.py`, `tests/test_predict_route_smoke.py`,
+    `docs/ops_materialization.md`, `docs/feature_importance.md`, `context/09_LOCAL_RUN_AND_TEST.md`
+  - Kept/adapted: `.github/workflows/materialize.yml`, `.github/workflows/drift.yml`,
+    `monitoring/drift_report.py`, `load_tests/locustfile.py`, `scripts/benchmark_predict.py`,
+    `scripts/export_feature_catalog.py`, `scripts/kafka_seed_events.py`,
+    `docs/HF_DEPLOYMENT.md`, `deploy/SPACE_README.md`, `docs/performance_testing.md`
+- **Decisions referenced/added**:
+  - D009 – Superseded a parallel feature-engineering/training implementation on merge.
 
 ---
 

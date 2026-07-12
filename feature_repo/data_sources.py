@@ -1,11 +1,11 @@
 from feast import FileSource
 
 
+# Point-in-time correct entity feature tables (see pipelines/build_entity_tables.py).
 customer_features_source = FileSource(
     name="customer_features_source",
     # Feast resolves relative paths from the repo root (feature_repo/),
     # but our processed data lives at data/processed/ under the project root.
-    # Use a relative path that goes up one level from feature_repo/.
     path="../data/processed/customer_features.parquet",
     timestamp_field="event_timestamp",
 )

@@ -48,6 +48,29 @@ def _build_dataframe(messages: List[Dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _push_with_retries(df: pd.DataFrame, max_retries: int = 3, base_delay: float = 1.0) -> None:
+    """
+    Push a dataframe to Feast with simple exponential backoff.
+
+    Offsets should only be committed if this function returns successfully.
+    """
+    attempt = 0
+    while True:
+        try:
+            push_customer_realtime(df)
+            return
+        except Exception:  # noqa: BLE001
+            attempt += 1
+            logger.exception(
+                "feast_push_from_kafka_failed",
+                extra={"attempt": attempt, "max_retries": max_retries},
+            )
+            if attempt >= max_retries:
+                raise
+            sleep_s = base_delay * (2** (attempt - 1))
+            time.sleep(sleep_s)
+
+
 def main() -> None:
     brokers = os.getenv("KAFKA_BROKERS", "localhost:9092")
     topic = os.getenv("KAFKA_TOPIC", "txn_events")
@@ -82,7 +105,7 @@ def main() -> None:
                         df = _build_dataframe(payloads)
                         if not df.empty:
                             try:
-                                push_customer_realtime(df)
+                                _push_with_retries(df)
                                 consumer.commit()
                                 logger.info(
                                     "Committed Kafka offsets after Feast push",
@@ -92,16 +115,16 @@ def main() -> None:
                                         "batch_size": len(buffer),
                                     },
                                 )
-                            except Exception:
-                                logger.exception("feast_push_from_kafka_failed")
-                                time.sleep(2.0)
+                            except Exception:  # noqa: BLE001
+                                logger.exception("feast_push_retry_exhausted")
+                                # Do not commit offsets; messages will be re-consumed.
                         buffer.clear()
 
             if not records:
                 time.sleep(1.0)
     except KeyboardInterrupt:
         logger.info("Kafka consumer interrupted by user")
-    except Exception:
+    except Exception:  # noqa: BLE001
         logger.exception("kafka_consumer_failed")
         raise
     finally:

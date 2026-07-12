@@ -36,6 +36,7 @@ outputs/
 artifacts/
 # NOTE: models/ is intentionally tracked -- the serving container needs the
 # trained artifact and free-tier deployment has no artifact registry (yet).
+docs/drift/
 
 # Archives
 *.zip

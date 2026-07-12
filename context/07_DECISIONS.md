@@ -179,6 +179,7 @@ Each decision should have:
     scheme and timestamp logic to keep entity keys consistent.
   - Any future changes to hashing or timestamp logic must be treated as breaking
     changes and recorded here.
+
 ---
 
 ## D005 – Point-in-time entity features with label maturation delay
@@ -273,3 +274,54 @@ Each decision should have:
 - **Consequences / Follow-ups**:
   - Data must be re-ingested when the demo window drifts too far into the
     past (document a refresh command in deployment docs).
+
+---
+
+## D009 – Superseded a parallel feature-engineering/training implementation on merge
+
+- **Date**: 2026-07-12
+- **Status**: accepted
+- **Context**:
+  - While Phase 1 was in progress on this branch, a separate PR
+    (`cosine/feat/step3-9-complete-project`) was merged directly into `main`,
+    adding its own windowed feature engineering (`pipelines/feature_engineering.py`),
+    Feast views (`*_features_fv_v1`), on-demand view, and training pipeline
+    targeting a `risk_scoring_v1` feature service.
+  - Reconciling this branch with `main` required a decision on which
+    implementation to keep going forward.
+- **Findings**:
+  - The parallel implementation reintroduces exactly the leakage classes D005/D006
+    (this document) were written to fix:
+    - `mch_fraud_rate_7d` is an **unshifted** rolling mean of `isFraud` — a
+      time-indexed pandas `.rolling(window).mean()` includes the current row,
+      so this feature contains the label of the very transaction being scored.
+    - `acct_org_balance_delta` / `acct_dest_balance_delta` are computed from
+      `newbalanceOrig`/`newbalanceDest`, i.e. **post-transaction** state,
+      unavailable to a real-time scorer (same issue as D006 above).
+  - Its `*_profile_v1` views (also leaky — full-dataset `fraud_rate`) were left
+    in place rather than removed.
+- **Decision**:
+  - Keep this branch's point-in-time correct pipeline, `*_profile_v2` views, and
+    `fraud_detection_v2` training/serving path as canonical. Remove the parallel
+    implementation's leakage-prone modules and their direct tests:
+    `pipelines/feature_engineering.py`, `feature_repo/on_demand_feature_views.py`,
+    `scripts/feast_materialize_incremental.sh`,
+    `notebooks/02_training_and_feature_importance.ipynb`, and
+    `tests/test_api_contracts.py`, `tests/test_feature_engineering_schema.py`,
+    `tests/test_model_artifact_schema.py`, `tests/test_predict_route_smoke.py`
+    (each asserts against the removed schema/artifacts).
+  - Keep the parallel PR's genuinely additive, non-conflicting assets: CI
+    workflows (`materialize.yml`, `drift.yml`, adapted to this branch's
+    commands), `monitoring/drift_report.py`, `load_tests/locustfile.py` and
+    `scripts/benchmark_predict.py` (adapted to this branch's request schema),
+    `scripts/export_feature_catalog.py` (introspection-based, name-agnostic),
+    and deployment docs.
+  - Docs that documented only the removed pipeline
+    (`docs/ops_materialization.md`, `docs/feature_importance.md`,
+    `context/09_LOCAL_RUN_AND_TEST.md`) were removed rather than left stale;
+    Phase 2/4 should write their replacements against the verified v2 commands.
+- **Consequences / Follow-ups**:
+  - `main` briefly contained the leaky parallel implementation between the two
+    PRs' merges; this decision documents why it was not carried forward.
+  - Phase 2 should add a CI job that actually runs `pytest`, since neither
+    implementation had one.

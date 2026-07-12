@@ -13,7 +13,7 @@ This repository is intentionally minimal but _runnable_ so that future steps (fe
 
 ---
 
-## 1. What this repo provides (Steps 0–2)
+## 1. What this repo provides (Steps 0–3)
 
 ### 1.1. Context system
 
@@ -31,16 +31,17 @@ A **context system** under `./context/` that documents:
 ### 1.2. Services and infra
 
 - **FastAPI service** (`services/api/app/main.py`) exposing:
-  - `GET /health` → `{"status": "ok"}`
+  - `GET /health` and `GET /api/health` → `{"status": "ok"}`
   - `GET /metrics` → Prometheus metrics (via `prometheus_client`)
-  - `POST /api/predict` → stubbed prediction, latency, and debug info
+  - `POST /api/predict` → model-backed fraud prediction with latency breakdowns
   - `GET /api/feast/health` → checks basic Feast/registry wiring
-  - `POST /api/features/online` → minimal endpoint for fetching online features
-    (returns clear 5xx errors if Feast/DB are not configured)
+  - `POST /api/features/online` → debug endpoint for fetching online features
+  - `POST /api/push` → push realtime customer events into Feast `PushSource`
 
 - **Gradio app** (`app.py`) that:
-  - Renders a simple fraud prediction form
-  - Calls the local `/api/predict` endpoint
+  - Renders a fraud prediction form (amount, type, origin/destination accounts)
+  - Maps raw inputs into entity IDs consistent with the offline pipeline
+  - Calls the `/api/predict` endpoint and displays prediction + latency details
   - Handles errors gracefully and logs failures
 
 - **Prometheus config** (`monitoring/prometheus.yml`) to scrape FastAPI `/metrics`.
@@ -161,20 +162,26 @@ A **context system** under `./context/` that documents:
       - `last_txn_hour`
       - `last_txn_is_flagged`
     - Calls `push_customer_realtime(...)`.
-    - Commits offsets only after successful pushes, with logging and simple backoff.
+    - Commits offsets only after successful pushes, with logging and exponential backoff on failures.
   - `services/streaming/kafka_producer.py`:
     - Seeds synthetic events to a Kafka topic for local testing.
 
 - Kafka helpers:
   - `scripts/kafka_seed.sh`:
     - Runs `python -m services.streaming.kafka_producer` against local Redpanda (by default).
+  - `scripts/kafka_seed_events.py`:
+    - Simple Python CLI to seed `N` sample events into a Kafka topic.
 
 - Tests:
   - `tests/test_feature_repo_imports.py`:
-    - Imports `feature_repo` modules to catch structural errors.
+    - Imports `feature_repo` modules (including on-demand views) to catch structural errors.
   - `tests/test_api_routes.py`:
     - Checks that core routes exist.
     - Feast-dependent checks are skipped if `POSTGRES_HOST` is not configured.
+  - `tests/test_api_contracts.py`:
+    - Validates the `PredictionRequest` / `PredictionResponse` Pydantic models.
+  - `tests/test_predict_route_smoke.py`:
+    - Optional smoke test for `/api/predict` when a trained model artifact is present.
 
 ---
 
@@ -313,5 +320,15 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for:
 - How to run tests and linting
 - How to structure changes with Cosine AI tasks
 - How to update the context and decision logs
+
+## 7. Feature catalog
+
+A generated **feature catalog** is available at [`docs/feature_catalog.md`](docs/feature_catalog.md).
+
+To regenerate it after changing Feast entities, FeatureViews, or FeatureServices:
+
+```bash
+python scripts/export_feature_catalog.py
+```
 
 This project is designed to remain free-tier compatible and reproducible on a small machine, while still pushing toward production-grade practices.

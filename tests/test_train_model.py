@@ -75,3 +75,16 @@ def test_build_entity_df_excludes_post_transaction_fields():
     assert "newbalanceDest" not in entity_df.columns
     assert entity_df["type_code"].iloc[0] == 3  # CASH_OUT
     assert entity_df["amount_over_orig_balance"].iloc[0] == 100.0 / 1001.0
+
+
+def test_model_uses_balanced_class_weight():
+    """Regression guard for D010: unweighted HGB saturates scores at this
+    imbalance and never reaches a usable high-precision threshold."""
+    from pipelines.train_model import HistGradientBoostingClassifier
+
+    # Build a fresh model the way train_and_evaluate does and check the knob
+    # directly, rather than re-deriving the full metric comparison here.
+    frame = _synthetic_training_frame()
+    result = train_and_evaluate(frame, feature_cols=["amount", "signal", "noise"])
+    assert isinstance(result["model"], HistGradientBoostingClassifier)
+    assert result["model"].class_weight == "balanced"

@@ -135,12 +135,18 @@ def train_and_evaluate(
         },
     )
 
+    # class_weight="balanced" matters a lot at this prevalence (~0.3% fraud):
+    # unweighted, the model saturates scores near exactly 0/1 and never
+    # reaches a usable high-precision operating point (recall@precision=0.90
+    # was 0.0). Weighted, PR-AUC goes 0.54 -> 0.93 and recall@precision=0.90
+    # goes 0.0 -> 0.84 on this test window (see D010).
     model = HistGradientBoostingClassifier(
         max_iter=300,
         learning_rate=0.1,
         max_depth=None,
         early_stopping=True,
         random_state=seed,
+        class_weight="balanced",
     )
     model.fit(X_train, y_train)
     y_score = model.predict_proba(X_test)[:, 1]
@@ -204,11 +210,20 @@ def _write_model_card(
 
 ## Summary
 
-Gradient-boosted trees (`sklearn.ensemble.HistGradientBoostingClassifier`)
-scoring the probability that an online payment transaction is fraudulent.
-Features are served by a Feast feature store; training data was assembled via
-`get_historical_features` (point-in-time joins) against the same
-`fraud_detection_v2` feature service used at serving time.
+Gradient-boosted trees (`sklearn.ensemble.HistGradientBoostingClassifier`,
+`class_weight="balanced"`) scoring the probability that an online payment
+transaction is fraudulent. Features are served by a Feast feature store;
+training data was assembled via `get_historical_features` (point-in-time
+joins) against the same `fraud_detection_v2` feature service used at serving
+time.
+
+`class_weight="balanced"` matters a lot at this prevalence (~0.34% fraud):
+unweighted, predicted probabilities collapsed to almost exactly 0 or 1 and no
+threshold reached 90% precision (`recall_at_precision_0.90 == 0.0`).
+Weighted, PR-AUC went 0.54 → 0.93 and `recall_at_precision_0.90` went 0.0 →
+0.84 on the same test window (see decision D010) -- this is a reweighted
+loss, not a post-hoc calibration, so it changed the model's ranking, not just
+its threshold.
 
 ## Data — read this first
 

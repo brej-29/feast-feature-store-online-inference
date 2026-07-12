@@ -325,3 +325,45 @@ Each decision should have:
     PRs' merges; this decision documents why it was not carried forward.
   - Phase 2 should add a CI job that actually runs `pytest`, since neither
     implementation had one.
+
+---
+
+## D010 – class_weight="balanced" on the fraud model (fixes threshold/probability saturation)
+
+- **Date**: 2026-07-12
+- **Status**: accepted
+- **Context**:
+  - The Phase 1 model (`HistGradientBoostingClassifier`, unweighted) reported
+    a suspicious max-F1 threshold of ~0.9999999992 and
+    `recall_at_precision_0.90 == 0.0` -- i.e. no operating point on the test
+    PR curve reached 90% precision, even though PR-AUC (0.54) suggested
+    reasonable ranking ability.
+- **Diagnosis**:
+  - At ~0.34% fraud prevalence, the unweighted model's predicted
+    probabilities collapse toward exactly 0 or 1 (median score for true
+    fraud cases was exactly `1.0`; at threshold 0.5, precision was only
+    ~44%). Many negatives tie exactly at the same saturated scores as
+    positives, so no threshold separates a high-precision region.
+- **Options considered**:
+  - **Option A** – Keep unweighted, pick a lower operating precision target
+    (e.g. recall@precision=0.70) and document the ceiling.
+    - Cons: leaves a strictly worse model in production when a one-line fix
+      is available.
+  - **Option B** – Set `class_weight="balanced"` on the classifier.
+    - Verified on the same test split: PR-AUC 0.544 → **0.928**, ROC-AUC
+      0.700 → **0.976**, Brier score 0.00297 → **0.00092** (better
+      calibrated, not just reranked), `recall_at_precision_0.90` 0.0 →
+      **0.842**, max-F1 threshold 0.9999999992 → **0.970** (a threshold a
+      human can actually reason about).
+- **Decision**:
+  - Adopt Option B (`pipelines/train_model.py`). Since `class_weight`
+    reweights the training loss (not a post-hoc monotonic calibration), this
+    changes the model's ranking itself, not just where the threshold falls
+    -- confirmed by the PR-AUC/ROC-AUC/Brier improvements above, not only the
+    threshold shift.
+- **Consequences / Follow-ups**:
+  - Retrained and re-materialized; `models/metrics_v2.json` and
+    `models/MODEL_CARD.md` reflect the new numbers.
+  - The unweighted logistic-regression baseline is left as-is deliberately,
+    so the model card can show the contrast (simple unweighted baseline vs.
+    the imbalance-aware production model).

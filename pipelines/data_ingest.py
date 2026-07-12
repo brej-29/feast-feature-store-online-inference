@@ -2,11 +2,13 @@ import argparse
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+
+from pipelines.encoders import deterministic_hash
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,18 +38,24 @@ def _validate_columns(df: pd.DataFrame) -> None:
         raise ValueError(f"Missing required columns: {missing}")
 
 
-def _deterministic_hash(value: str) -> str:
-    """Simple deterministic hash for IDs, stable across runs and platforms."""
-    # Using sha256 keeps it deterministic and portable.
-    import hashlib
+def _resolve_base_time(base_time: str, max_step: int) -> datetime:
+    """Resolve the simulation base time.
 
-    if value is None:
-        value = ""
-    encoded = value.encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()[:16]
+    "recent" anchors the simulated window so it ends roughly one hour before
+    now. This keeps online-store TTLs and `feast materialize-incremental`
+    meaningful when serving the historical dataset as if it were live traffic.
+    Any other value must be an ISO-8601 timestamp (assumed UTC if naive).
+    """
+    if base_time == "recent":
+        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        return now - timedelta(hours=max_step + 1)
+    parsed = datetime.fromisoformat(base_time)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
-def _clean_and_augment(df: pd.DataFrame) -> pd.DataFrame:
+def _clean_and_augment(df: pd.DataFrame, base_time: str = "recent") -> pd.DataFrame:
     logger.info("Starting cleaning and augmentation", extra={"rows": len(df)})
 
     # Validate columns early
@@ -97,18 +105,19 @@ def _clean_and_augment(df: pd.DataFrame) -> pd.DataFrame:
         df = df.loc[~mask_impossible].copy()
 
     # Event timestamp from step
-    base_time = datetime(2017, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
     df["step"] = df["step"].astype("int64")
-    df["event_timestamp"] = base_time + pd.to_timedelta(df["step"], unit="h")
+    resolved_base = _resolve_base_time(base_time, max_step=int(df["step"].max()))
+    logger.info("Using base time for event timestamps", extra={"base_time": resolved_base.isoformat()})
+    df["event_timestamp"] = resolved_base + pd.to_timedelta(df["step"], unit="h")
 
     # Derived IDs
     df["customer_id"] = df["nameOrig"].astype(str)
     df["merchant_id"] = df["nameDest"].astype(str)
     df["account_id"] = df["nameOrig"].astype(str)
-    df["geo_cell_id"] = df["nameDest"].astype(str).apply(_deterministic_hash)
+    df["geo_cell_id"] = df["nameDest"].astype(str).apply(deterministic_hash)
     df["device_id"] = (
         df["nameOrig"].astype(str) + "|" + df["nameDest"].astype(str)
-    ).apply(_deterministic_hash)
+    ).apply(deterministic_hash)
 
     logger.info(
         "Completed cleaning and augmentation",
@@ -121,15 +130,37 @@ def _load_sample(
     raw_path: str,
     sample_rows: Optional[int],
     seed: int,
+    sample_strategy: str = "uniform",
 ) -> pd.DataFrame:
     logger.info(
         "Loading raw CSV",
-        extra={"raw_path": raw_path, "sample_rows": sample_rows, "seed": seed},
+        extra={
+            "raw_path": raw_path,
+            "sample_rows": sample_rows,
+            "seed": seed,
+            "sample_strategy": sample_strategy,
+        },
     )
 
     if sample_rows is None:
         df = pd.read_csv(raw_path)
         logger.info("Loaded full dataset", extra={"rows": len(df)})
+        return df
+
+    if sample_strategy == "uniform":
+        # Random sample across the FULL simulated time range. The previous
+        # "head" strategy silently kept only the first hours of the
+        # simulation, which breaks temporal train/test splits and
+        # point-in-time feature semantics.
+        df = pd.read_csv(raw_path)
+        total = len(df)
+        if total > sample_rows:
+            df = df.sample(n=sample_rows, random_state=seed)
+        df = df.sort_values("step", kind="stable").reset_index(drop=True)
+        logger.info(
+            "Uniform sample constructed",
+            extra={"total_rows_scanned": total, "sample_rows": len(df)},
+        )
         return df
 
     rng = np.random.default_rng(seed)
@@ -219,6 +250,8 @@ def run(
     out_dir: str,
     sample_rows: Optional[int],
     seed: int,
+    sample_strategy: str = "uniform",
+    base_time: str = "recent",
 ) -> None:
     if not os.path.exists(raw_path):
         logger.error(
@@ -232,8 +265,13 @@ def run(
 
     os.makedirs(out_dir, exist_ok=True)
 
-    df_raw = _load_sample(raw_path=raw_path, sample_rows=sample_rows, seed=seed)
-    df_clean = _clean_and_augment(df_raw)
+    df_raw = _load_sample(
+        raw_path=raw_path,
+        sample_rows=sample_rows,
+        seed=seed,
+        sample_strategy=sample_strategy,
+    )
+    df_clean = _clean_and_augment(df_raw, base_time=base_time)
 
     parquet_path = os.path.join(out_dir, "transactions_clean.parquet")
     schema_path = os.path.join(out_dir, "transactions_full_schema.json")
@@ -282,6 +320,26 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         default=42,
         help="Random seed used for sampling.",
     )
+    parser.add_argument(
+        "--sample_strategy",
+        type=str,
+        choices=["uniform", "head"],
+        default="uniform",
+        help=(
+            "'uniform' samples randomly across the full time range (recommended); "
+            "'head' keeps the legacy chunked behavior that favors early rows."
+        ),
+    )
+    parser.add_argument(
+        "--base_time",
+        type=str,
+        default="recent",
+        help=(
+            "Base timestamp for step 0. 'recent' anchors the simulation to end "
+            "about now (recommended for online serving demos); otherwise pass "
+            "an ISO-8601 timestamp such as 2017-01-01T00:00:00Z."
+        ),
+    )
     return parser.parse_args(args=args)
 
 
@@ -300,6 +358,8 @@ def main(cli_args: Optional[List[str]] = None) -> None:
             out_dir=args.out_dir,
             sample_rows=sample_rows,
             seed=args.seed,
+            sample_strategy=args.sample_strategy,
+            base_time=args.base_time,
         )
     except Exception:
         logger.exception("data_ingest_failed")

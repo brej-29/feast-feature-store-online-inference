@@ -8,6 +8,7 @@ from typing import Dict, List
 import pandas as pd
 from kafka import KafkaConsumer
 
+from pipelines.encoders import map_type_to_code
 from services.streaming.feast_push import push_customer_realtime
 
 logging.basicConfig(
@@ -15,18 +16,6 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger("feast_fraud.streaming.kafka_consumer")
-
-
-TYPE_CODE_MAPPING: Dict[str, int] = {
-    "PAYMENT": 1,
-    "TRANSFER": 2,
-    "CASH_OUT": 3,
-    "CASH_IN": 4,
-}
-
-
-def _map_type_to_code(tx_type: str) -> int:
-    return TYPE_CODE_MAPPING.get(str(tx_type).upper(), 0)
 
 
 def _build_dataframe(messages: List[Dict]) -> pd.DataFrame:
@@ -47,7 +36,7 @@ def _build_dataframe(messages: List[Dict]) -> pd.DataFrame:
                     "event_timestamp": ts.astimezone(timezone.utc),
                     "customer_id": customer_id,
                     "last_txn_amount": amount,
-                    "last_txn_type_code": _map_type_to_code(tx_type),
+                    "last_txn_type_code": map_type_to_code(tx_type),
                     "last_txn_hour": last_txn_hour,
                     "last_txn_is_flagged": is_flagged,
                 }

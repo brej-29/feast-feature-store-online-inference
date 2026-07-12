@@ -1,13 +1,18 @@
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+import joblib
+import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from feast import FeatureStore
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel
+
+from pipelines.encoders import deterministic_hash, map_type_to_code
 
 logger = logging.getLogger("feast_fraud.api")
 
@@ -29,8 +34,32 @@ REQUEST_COUNT = Counter(
     ["endpoint", "http_status"],
 )
 
+FEATURE_FETCH_LATENCY = Histogram(
+    "predict_feature_fetch_seconds",
+    "Latency of online feature retrieval from the Feast online store.",
+)
+
+INFERENCE_LATENCY = Histogram(
+    "predict_inference_seconds",
+    "Latency of model inference.",
+)
+
+PREDICTION_SCORE = Histogram(
+    "predict_fraud_probability",
+    "Distribution of predicted fraud probabilities.",
+    buckets=[0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0],
+)
+
+DEGRADED_PREDICTIONS = Counter(
+    "predict_degraded_total",
+    "Predictions served without online features (feature store unavailable).",
+)
+
 _FEATURE_STORE: Optional[FeatureStore] = None
+_MODEL_BUNDLE: Optional[Dict[str, Any]] = None
+
 FEAST_REPO_PATH = os.getenv("FEAST_REPO_PATH", "feature_repo")
+MODEL_PATH = os.getenv("MODEL_PATH", os.path.join("models", "fraud_model_v2.joblib"))
 
 
 class PredictInput(BaseModel):
@@ -40,8 +69,12 @@ class PredictInput(BaseModel):
 
 class PredictOutput(BaseModel):
     fraud_probability: float
+    is_fraud: bool
+    threshold: float
     model_version: str
     latency_ms: float
+    feature_fetch_ms: float
+    inference_ms: float
     debug_info: Optional[Dict[str, Any]] = None
 
 
@@ -55,7 +88,7 @@ class OnlineFeaturesRequest(BaseModel):
 
 app = FastAPI(
     title="Feast Fraud Feature Store API",
-    version="0.0.1",
+    version="0.2.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
 )
@@ -70,6 +103,94 @@ def get_feature_store() -> FeatureStore:
         )
         _FEATURE_STORE = FeatureStore(repo_path=FEAST_REPO_PATH)
     return _FEATURE_STORE
+
+
+def get_model_bundle() -> Dict[str, Any]:
+    """Load the trained model bundle (model + feature contract) lazily.
+
+    The bundle carries the exact feature names/order used at training time,
+    plus per-feature defaults, so serving cannot silently drift from training.
+    """
+    global _MODEL_BUNDLE
+    if _MODEL_BUNDLE is None:
+        if not os.path.exists(MODEL_PATH):
+            raise FileNotFoundError(
+                f"Model artifact not found at {MODEL_PATH}. "
+                "Run pipelines/train_model.py first."
+            )
+        logger.info("Loading model bundle", extra={"model_path": MODEL_PATH})
+        _MODEL_BUNDLE = joblib.load(MODEL_PATH)
+    return _MODEL_BUNDLE
+
+
+def _derive_entity_ids(entity_ids: Dict[str, Any]) -> Dict[str, str]:
+    """Derive the full entity key set from what the caller provided.
+
+    Mirrors pipelines/data_ingest.py exactly: account == origin customer,
+    geo cell and device are deterministic hashes. Accepts either canonical
+    ids (customer_id/merchant_id) or raw Kaggle-style names
+    (nameOrig/nameDest).
+    """
+    customer_id = str(entity_ids.get("customer_id") or entity_ids.get("nameOrig") or "")
+    merchant_id = str(entity_ids.get("merchant_id") or entity_ids.get("nameDest") or "")
+    if not customer_id or not merchant_id:
+        raise HTTPException(
+            status_code=400,
+            detail="entity_ids must include customer_id/nameOrig and merchant_id/nameDest.",
+        )
+    return {
+        "customer_id": customer_id,
+        "merchant_id": merchant_id,
+        "account_id": str(entity_ids.get("account_id") or customer_id),
+        "geo_cell_id": str(entity_ids.get("geo_cell_id") or deterministic_hash(merchant_id)),
+        "device_id": str(
+            entity_ids.get("device_id")
+            or deterministic_hash(f"{customer_id}|{merchant_id}")
+        ),
+    }
+
+
+def _build_request_features(request: Dict[str, Any]) -> Dict[str, float]:
+    """Features computed from the request payload itself (no store lookup).
+
+    Must mirror pipelines/train_model.py::build_entity_df.
+    """
+
+    def _num(key: str, default: float = 0.0) -> float:
+        try:
+            return float(request.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    amount = _num("amount")
+    oldbalance_org = _num("oldbalanceOrg")
+    oldbalance_dest = _num("oldbalanceDest")
+    return {
+        "amount": amount,
+        "type_code": float(map_type_to_code(str(request.get("type", "")))),
+        "txn_hour": float(datetime.now(timezone.utc).hour),
+        "oldbalanceOrg": oldbalance_org,
+        "oldbalanceDest": oldbalance_dest,
+        "amount_over_orig_balance": amount / (oldbalance_org + 1.0),
+    }
+
+
+def _fetch_online_features(
+    store: FeatureStore,
+    bundle: Dict[str, Any],
+    entity_row: Dict[str, str],
+) -> Dict[str, Optional[float]]:
+    service = store.get_feature_service(bundle["feature_service"])
+    result = store.get_online_features(
+        features=service,
+        entity_rows=[entity_row],
+        full_feature_names=True,
+    ).to_dict()
+    return {
+        name: (values[0] if values else None)
+        for name, values in result.items()
+        if name in set(bundle["feast_feature_names"])
+    }
 
 
 @app.middleware("http")
@@ -125,7 +246,6 @@ async def health() -> Dict[str, str]:
 
     Returns a static payload that can be used by probes and load balancers.
     """
-    logger.info("health_check", extra={"status": "ok"})
     return {"status": "ok"}
 
 
@@ -138,58 +258,109 @@ async def metrics() -> Response:
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)
 
 
-@app.post("/api/predict", response_model=PredictOutput)
-async def predict(payload: PredictInput) -> PredictOutput:
-    """
-    Stub prediction endpoint.
-
-    Accepts a body of the form:
-    {
-        "entity_ids": {...},
-        "request": {
-            "amount": <float>,
-            "type": <str>,
-            ...
-        }
+@app.get("/api/model/info")
+async def model_info() -> Dict[str, Any]:
+    """Metadata about the currently served model (version, metrics, features)."""
+    try:
+        bundle = get_model_bundle()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "model_version": bundle["model_version"],
+        "trained_at": bundle["trained_at"],
+        "threshold": bundle["threshold"],
+        "feature_service": bundle["feature_service"],
+        "n_request_features": len(bundle["request_feature_names"]),
+        "n_feast_features": len(bundle["feast_feature_names"]),
+        "metrics": bundle["metrics"],
     }
 
-    Returns a fake fraud probability and measures internal latency.
+
+@app.post("/api/predict", response_model=PredictOutput)
+async def predict(payload: PredictInput) -> PredictOutput:
+    """Score a transaction for fraud.
+
+    Flow: derive entity keys -> fetch online features from the Feast online
+    store -> assemble the feature vector in the training-time order -> model
+    inference. If the online store is unavailable the endpoint degrades to
+    request-time features plus training defaults and flags the response.
     """
     start = time.perf_counter()
 
-    amount = payload.request.get("amount", 0.0)
     try:
-        amount_value = float(amount)
-    except (TypeError, ValueError):
-        amount_value = 0.0
+        bundle = get_model_bundle()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    base_prob = 0.05
-    scaled_component = min(amount_value / 100000.0, 0.9)
-    fraud_probability = min(0.95, base_prob + scaled_component)
+    entity_row = _derive_entity_ids(payload.entity_ids)
+    request_features = _build_request_features(payload.request)
 
+    degraded = False
+    online_features: Dict[str, Optional[float]] = {}
+    fetch_start = time.perf_counter()
+    try:
+        store = get_feature_store()
+        online_features = _fetch_online_features(store, bundle, entity_row)
+    except Exception:  # noqa: BLE001
+        logger.exception("online_feature_fetch_failed", extra={"entity_row": entity_row})
+        degraded = True
+        DEGRADED_PREDICTIONS.inc()
+    feature_fetch_s = time.perf_counter() - fetch_start
+    FEATURE_FETCH_LATENCY.observe(feature_fetch_s)
+
+    defaults = bundle["feature_defaults"]
+    missing: List[str] = []
+    row: Dict[str, float] = {}
+    for name in bundle["feature_names"]:
+        if name in request_features:
+            row[name] = request_features[name]
+        else:
+            value = online_features.get(name)
+            if value is None:
+                missing.append(name)
+                value = defaults.get(name, 0.0)
+            row[name] = float(value)
+
+    inference_start = time.perf_counter()
+    features_frame = pd.DataFrame([row], columns=bundle["feature_names"])
+    fraud_probability = float(bundle["model"].predict_proba(features_frame)[0, 1])
+    inference_s = time.perf_counter() - inference_start
+    INFERENCE_LATENCY.observe(inference_s)
+    PREDICTION_SCORE.observe(fraud_probability)
+
+    threshold = float(bundle["threshold"])
     latency_ms = (time.perf_counter() - start) * 1000.0
 
     logger.info(
-        "prediction_stub",
+        "prediction_served",
         extra={
-            "fraud_probability": fraud_probability,
-            "latency_ms": latency_ms,
-            "amount": amount_value,
+            "fraud_probability": round(fraud_probability, 6),
+            "model_version": bundle["model_version"],
+            "degraded": degraded,
+            "missing_features": len(missing),
+            "latency_ms": round(latency_ms, 2),
         },
     )
 
     return PredictOutput(
         fraud_probability=fraud_probability,
-        model_version="stub-0",
+        is_fraud=fraud_probability >= threshold,
+        threshold=threshold,
+        model_version=bundle["model_version"],
         latency_ms=latency_ms,
+        feature_fetch_ms=feature_fetch_s * 1000.0,
+        inference_ms=inference_s * 1000.0,
         debug_info={
-            "note": "Stub implementation; replace with real model and Feast features.",
+            "degraded": degraded,
+            "entity_ids": entity_row,
+            "missing_feature_count": len(missing),
+            "missing_features": missing[:20],
         },
     )
 
 
 @app.get("/api/feast/health")
-async def feast_health() -> Dict[str, str]:
+async def feast_health() -> Dict[str, Any]:
     """
     Health check for Feast integration.
 
@@ -198,10 +369,6 @@ async def feast_health() -> Dict[str, str]:
     try:
         store = get_feature_store()
         entities = store.list_entities()
-        logger.info(
-            "feast_health_ok",
-            extra={"entity_count": len(entities)},
-        )
         return {"status": "ok", "entities": [e.name for e in entities]}
     except Exception as exc:  # noqa: BLE001
         logger.exception("feast_health_failed", extra={"error": str(exc)})
@@ -216,9 +383,8 @@ async def get_online_features(body: OnlineFeaturesRequest) -> Dict[str, Any]:
     """
     Fetch online features for a list of customer entity rows.
 
-    This is a minimal endpoint used to validate end-to-end Feast + Postgres wiring.
-    It gracefully returns 500 errors if the feature store or online store is not
-    available, so tests do not require Postgres to be running.
+    Used to inspect what the online store currently holds for an entity
+    (e.g., to watch realtime features update as Kafka events are pushed).
     """
     if not body.entity_rows:
         raise HTTPException(status_code=400, detail="entity_rows must not be empty")
@@ -236,13 +402,13 @@ async def get_online_features(body: OnlineFeaturesRequest) -> Dict[str, Any]:
 
     try:
         feature_names = [
-            "customer_profile_v1:txn_count_total",
-            "customer_profile_v1:amount_sum_total",
-            "customer_profile_v1:amount_mean",
-            "customer_profile_v1:amount_max",
-            "customer_profile_v1:fraud_rate",
-            "customer_profile_v1:flagged_rate",
-            "customer_profile_v1:unique_counterparty_count",
+            "customer_profile_v2:txn_count_prior",
+            "customer_profile_v2:amount_sum_prior",
+            "customer_profile_v2:amount_mean_prior",
+            "customer_profile_v2:amount_max_prior",
+            "customer_profile_v2:unique_counterparty_count_prior",
+            "customer_profile_v2:flagged_rate_prior",
+            "customer_profile_v2:fraud_rate_prior",
             "customer_realtime_v1:last_txn_amount",
             "customer_realtime_v1:last_txn_type_code",
             "customer_realtime_v1:last_txn_hour",
@@ -253,11 +419,6 @@ async def get_online_features(body: OnlineFeaturesRequest) -> Dict[str, Any]:
             features=feature_names,
             entity_rows=entity_dicts,
         ).to_dict()
-
-        logger.info(
-            "online_features_fetched",
-            extra={"entity_count": len(entity_dicts)},
-        )
 
         return {"features": result}
     except Exception as exc:  # noqa: BLE001

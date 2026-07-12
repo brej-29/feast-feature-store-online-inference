@@ -179,3 +179,97 @@ Each decision should have:
     scheme and timestamp logic to keep entity keys consistent.
   - Any future changes to hashing or timestamp logic must be treated as breaking
     changes and recorded here.
+---
+
+## D005 – Point-in-time entity features with label maturation delay
+
+- **Date**: 2026-07-12
+- **Status**: accepted
+- **Context**:
+  - The v1 entity tables aggregated over the FULL dataset — including each
+    row's own fraud label — and served `fraud_rate` as a feature. That is
+    target leakage: the model would be scored on information unavailable at
+    prediction time, inflating offline metrics and collapsing in production.
+- **Options considered**:
+  - **Option A** – Static temporal split: compute aggregates on an early
+    "history" window only, train on a later window.
+    - Pros: simple. Cons: features go stale; doesn't exercise Feast's
+      point-in-time join; weaker portfolio story.
+  - **Option B** – Per-(entity, timestamp) expanding aggregates over strictly
+    prior transactions, with a maturation delay on label-derived features.
+    - Pros: correct by construction; `get_historical_features` picks the
+      right row for any training timestamp; mirrors how real fraud systems
+      handle delayed chargeback labels. Cons: larger feature tables, more
+      complex builder.
+- **Decision**:
+  - Option B, implemented in `pipelines/build_entity_tables.py`. Behavioral
+    aggregates use transactions with `ts < t`; fraud-label aggregates only
+    count transactions matured by `t - 72h` (configurable
+    `--label_delay_hours`). Verified by `tests/test_point_in_time.py`.
+- **Consequences / Follow-ups**:
+  - Feature tables grow to one row per entity-timestamp (~300k rows/entity
+    at the current sample size) — acceptable for parquet + free-tier Postgres.
+  - v1 feature views were removed; consumers must use `*_profile_v2`.
+
+---
+
+## D006 – Exclude post-transaction balance fields from model features
+
+- **Date**: 2026-07-12
+- **Status**: accepted
+- **Context**:
+  - `newbalanceOrig`/`newbalanceDest` describe the state AFTER a transaction
+    executes. A real-time scorer decides before execution, so these fields
+    are unavailable at serving time. They also make PaySim near-trivially
+    separable, producing dishonest headline metrics.
+- **Decision**:
+  - The model uses only request-time fields (`amount`, `type`, hour,
+    pre-transaction balances) plus Feast-served historical features.
+    Enforced in `pipelines/train_model.py::build_entity_df` and tested.
+- **Consequences / Follow-ups**:
+  - Headline metrics are lower than typical PaySim notebooks (PR-AUC ~0.49
+    vs. inflated ~0.99) — this is intentional and documented in the model
+    card as an honesty feature.
+
+---
+
+## D007 – Committed model artifact bundle with feature contract
+
+- **Date**: 2026-07-12
+- **Status**: accepted
+- **Context**:
+  - Serving needs the trained model plus the exact feature names/order,
+    defaults, and threshold used at training time. Free-tier deployment has
+    no artifact registry.
+- **Options considered**:
+  - **Option A** – External registry (MLflow, HF Hub model repo). Deferred:
+    adds infra for Phase 2+.
+  - **Option B** – Commit a small joblib bundle (`models/fraud_model_v2.joblib`,
+    ~76KB) carrying model + feature contract + metrics, plus a model card.
+- **Decision**:
+  - Option B for now. The bundle is the single source of truth the API loads;
+    serving cannot silently drift from training because feature names and
+    defaults travel with the model.
+- **Consequences / Follow-ups**:
+  - Revisit with MLflow or HF Hub in a later phase; keep bundle size small.
+
+---
+
+## D008 – Uniform time sampling and recent-anchored timestamps
+
+- **Date**: 2026-07-12
+- **Status**: accepted
+- **Context**:
+  - The previous chunked sampler silently kept only the FIRST ~13 hours of
+    the 31-day simulation (200k head rows), breaking temporal splits and
+    entity history. Also, 2017-anchored timestamps make online-store TTLs and
+    `materialize-incremental` meaningless in a live demo.
+- **Decision**:
+  - `pipelines/data_ingest.py` now defaults to `--sample_strategy uniform`
+    (random sample across the full simulated window, sorted by step) and
+    `--base_time recent` (anchor the window to end roughly now). The legacy
+    behavior remains available via `--sample_strategy head` /
+    `--base_time <ISO>`.
+- **Consequences / Follow-ups**:
+  - Data must be re-ingested when the demo window drifts too far into the
+    past (document a refresh command in deployment docs).

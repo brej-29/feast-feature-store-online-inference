@@ -35,6 +35,64 @@ Use reverse chronological order (newest at the top).
 
 ---
 
+## Step 3 – Phase 1: leakage-safe features, real model, wired serving
+
+- **Date**: 2026-07-12
+- **Agent**: Claude Code (with human review)
+- **Context used**:
+  - context/00_PROJECT_GOAL.md
+  - context/04_DATASET_PLAN.md
+  - context/05_METRICS_AND_EVAL.md
+  - context/07_DECISIONS.md
+- **Summary**:
+  - **Fixed target leakage**: entity feature tables are now point-in-time
+    correct — one row per (entity, event_timestamp) aggregating only
+    strictly-prior transactions; fraud-label features additionally respect a
+    72h label maturation delay (D005).
+  - **Fixed sampling bias**: ingestion now samples uniformly across the full
+    ~31-day simulated window (the old chunked logic silently kept only the
+    first 13 hours) and anchors timestamps to end near "now" so online-store
+    TTLs and materialization behave like live traffic (D008).
+  - **Real training pipeline** (`pipelines/train_model.py`): training data
+    assembled via Feast `get_historical_features` against the
+    `fraud_detection_v2` feature service; temporal 80/20 split;
+    HistGradientBoostingClassifier; artifact bundle + metrics + model card
+    committed under `models/` (D007). Post-transaction balance fields are
+    excluded from features (D006).
+  - **Feast repo v2**: `*_profile_v2` views over the point-in-time sources;
+    leaky v1 views removed; `customer_realtime_v1` now has a valid batch
+    source carrying historical `last_txn_*` columns, so the PushSource path
+    and training read the same feature definitions.
+  - **Serving wired end-to-end**: `/api/predict` now derives entity keys,
+    fetches online features, scores with the trained model, and returns a
+    latency breakdown (feature fetch vs. inference); degrades gracefully to
+    request-time features if the online store is down. Added
+    `/api/model/info` and Prometheus metrics for score distribution and
+    per-stage latency.
+  - **Tests**: leakage regression suite for the point-in-time builder,
+    training smoke tests, mocked serving-path tests (28 passing).
+  - Shared encodings (transaction type codes, entity-id hashing) centralized
+    in `pipelines/encoders.py` and reused by ingest, training, streaming, and
+    serving.
+- **Files touched (high level)**:
+  - `pipelines/encoders.py` (new)
+  - `pipelines/data_ingest.py`
+  - `pipelines/build_entity_tables.py` (rewritten)
+  - `pipelines/train_model.py` (new)
+  - `feature_repo/feature_views.py`, `feature_repo/feature_services.py`, `feature_repo/__init__.py`
+  - `services/api/app/main.py` (rewritten predict path)
+  - `services/streaming/kafka_consumer.py`
+  - `scripts/feast_materialize.sh`
+  - `models/` (new: artifact, metrics, model card)
+  - `tests/test_point_in_time.py`, `tests/test_train_model.py`, `tests/test_api_predict.py` (new)
+- **Decisions referenced/added**:
+  - D005 – Point-in-time entity features with label maturation delay.
+  - D006 – Exclude post-transaction balance fields from model features.
+  - D007 – Committed model artifact bundle with feature contract.
+  - D008 – Uniform time sampling and recent-anchored timestamps.
+
+---
+
 ## Step 2 – Feast + Postgres + Kafka baseline wiring
 
 - **Date**: 2026-01-24

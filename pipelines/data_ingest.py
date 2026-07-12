@@ -7,8 +7,10 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+from pandera.errors import SchemaErrors
 
 from pipelines.encoders import deterministic_hash
+from pipelines.schemas import CleanedTransactionSchema
 
 logging.basicConfig(
     level=logging.INFO,
@@ -163,7 +165,6 @@ def _load_sample(
         )
         return df
 
-    rng = np.random.default_rng(seed)
     chunksize = 100_000
     sample: Optional[pd.DataFrame] = None
     total_rows = 0
@@ -272,6 +273,18 @@ def run(
         sample_strategy=sample_strategy,
     )
     df_clean = _clean_and_augment(df_raw, base_time=base_time)
+
+    try:
+        CleanedTransactionSchema.validate(df_clean, lazy=True)
+    except SchemaErrors as exc:
+        logger.error(
+            "cleaned_transactions_schema_validation_failed",
+            extra={"failure_count": len(exc.failure_cases)},
+        )
+        raise ValueError(
+            f"Cleaned transactions failed schema validation:\n{exc.failure_cases}"
+        ) from exc
+    logger.info("Cleaned transactions passed schema validation", extra={"rows": len(df_clean)})
 
     parquet_path = os.path.join(out_dir, "transactions_clean.parquet")
     schema_path = os.path.join(out_dir, "transactions_full_schema.json")

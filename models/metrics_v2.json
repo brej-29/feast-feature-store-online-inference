@@ -1,0 +1,18 @@
+{
+  "model_version": "hgb_v2_20260711",
+  "test_rows": 60000,
+  "test_fraud_rate": 0.0033833333333333332,
+  "pr_auc": 0.4911540732776504,
+  "roc_auc": 0.6689821086795216,
+  "brier_score": 0.0023079812161689185,
+  "recall_at_precision_0.90": 0.0,
+  "recall_at_precision_0.95": 0.0,
+  "precision_at_recall_0.50": 0.7697368421052632,
+  "threshold_max_f1": 0.9999999936317052,
+  "f1_at_threshold": 0.6611111111111111,
+  "baseline_prevalence_pr_auc": 0.0033833333333333332,
+  "baseline_logreg_pr_auc": 0.09751347940390374,
+  "baseline_logreg_roc_auc": 0.7598230334470707,
+  "train_rows": 240000,
+  "split_time": "2026-06-25 15:00:00+00:00"
+}

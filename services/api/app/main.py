@@ -1,12 +1,14 @@
+import contextvars
 import logging
 import os
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import joblib
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from feast import FeatureStore
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
@@ -16,10 +18,31 @@ from pipelines.encoders import deterministic_hash, map_type_to_code
 
 logger = logging.getLogger("feast_fraud.api")
 
+# Correlation ID for the request currently being handled on this async task.
+# Propagates through awaited calls within the same request without needing to
+# thread an argument through every function; defaults to "-" for log lines
+# emitted outside a request (startup, background pipelines, etc.).
+request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "request_id", default="-"
+)
+
+
+class _RequestIdFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = request_id_var.get()
+        return True
+
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    format="%(asctime)s %(levelname)s %(name)s [%(request_id)s] %(message)s",
 )
+# Attach to the handler (not the root logger) so it fires for every record
+# that reaches it regardless of which named logger emitted it -- logger-level
+# filters only run for the originating logger, not for records propagated up
+# from child loggers like "feast_fraud.api".
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(_RequestIdFilter())
 
 
 REQUEST_LATENCY = Histogram(
@@ -61,6 +84,16 @@ _MODEL_BUNDLE: Optional[Dict[str, Any]] = None
 FEAST_REPO_PATH = os.getenv("FEAST_REPO_PATH", "feature_repo")
 MODEL_PATH = os.getenv("MODEL_PATH", os.path.join("models", "fraud_model_v2.joblib"))
 
+# If API_KEY is unset, auth is disabled (local dev / tests). If set, callers
+# must send a matching X-API-Key header. Read at request time (not import
+# time) so tests can toggle it via monkeypatch/env without reimporting.
+def require_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
+    expected = os.getenv("API_KEY")
+    if not expected:
+        return
+    if x_api_key != expected:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
 
 class PredictInput(BaseModel):
     entity_ids: Dict[str, Any]
@@ -92,6 +125,16 @@ app = FastAPI(
     docs_url="/api/docs",
     redoc_url="/api/redoc",
 )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Include the request correlation ID on every HTTPException response."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "request_id": request_id_var.get()},
+        headers=exc.headers,
+    )
 
 
 def get_feature_store() -> FeatureStore:
@@ -196,47 +239,56 @@ def _fetch_online_features(
 @app.middleware("http")
 async def metrics_middleware(request: Request, call_next):
     """
-    Middleware for basic structured logging and Prometheus metrics.
+    Middleware for request correlation, structured logging, and Prometheus metrics.
 
+    - Assigns/propagates a request ID (X-Request-ID) for log correlation.
     - Logs each request with method, path, and status.
     - Records latency and status code labels in Prometheus metrics.
     """
+    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:16]
+    token = request_id_var.set(request_id)
+
     start = time.perf_counter()
     path = request.url.path
 
     try:
-        response = await call_next(request)
-    except Exception:  # noqa: BLE001
+        try:
+            response = await call_next(request)
+        except Exception:  # noqa: BLE001
+            process_time = time.perf_counter() - start
+            REQUEST_LATENCY.labels(endpoint=path).observe(process_time)
+            REQUEST_COUNT.labels(endpoint=path, http_status="500").inc()
+
+            logger.exception(
+                "unhandled_exception",
+                extra={
+                    "path": path,
+                    "method": request.method,
+                },
+            )
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Internal server error", "request_id": request_id},
+                headers={"X-Request-ID": request_id},
+            )
+
         process_time = time.perf_counter() - start
         REQUEST_LATENCY.labels(endpoint=path).observe(process_time)
-        REQUEST_COUNT.labels(endpoint=path, http_status="500").inc()
+        REQUEST_COUNT.labels(endpoint=path, http_status=str(response.status_code)).inc()
 
-        logger.exception(
-            "unhandled_exception",
+        logger.info(
+            "request_completed",
             extra={
                 "path": path,
                 "method": request.method,
+                "status_code": response.status_code,
+                "latency_seconds": process_time,
             },
         )
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Internal server error"},
-        )
-
-    process_time = time.perf_counter() - start
-    REQUEST_LATENCY.labels(endpoint=path).observe(process_time)
-    REQUEST_COUNT.labels(endpoint=path, http_status=str(response.status_code)).inc()
-
-    logger.info(
-        "request_completed",
-        extra={
-            "path": path,
-            "method": request.method,
-            "status_code": response.status_code,
-            "latency_seconds": process_time,
-        },
-    )
-    return response
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        request_id_var.reset(token)
 
 
 @app.get("/health")
@@ -276,7 +328,7 @@ async def model_info() -> Dict[str, Any]:
     }
 
 
-@app.post("/api/predict", response_model=PredictOutput)
+@app.post("/api/predict", response_model=PredictOutput, dependencies=[Depends(require_api_key)])
 async def predict(payload: PredictInput) -> PredictOutput:
     """Score a transaction for fraud.
 

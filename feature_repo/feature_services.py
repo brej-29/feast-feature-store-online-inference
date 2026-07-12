@@ -1,5 +1,4 @@
 from feast import FeatureService
-
 from feature_views import (
     account_profile_v2,
     customer_profile_v2,

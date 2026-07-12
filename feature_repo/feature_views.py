@@ -1,9 +1,6 @@
 from datetime import timedelta
 from typing import List
 
-from feast import FeatureView, Field, PushSource
-from feast.types import Float32, Int64
-
 from data_sources import (
     account_features_source,
     customer_features_source,
@@ -12,6 +9,8 @@ from data_sources import (
     merchant_features_source,
 )
 from entities import account, customer, device, geocell, merchant
+from feast import FeatureView, Field, PushSource
+from feast.types import Float32, Int64
 
 # v2 feature views are point-in-time correct: each source row holds
 # aggregates over that entity's STRICTLY PRIOR transactions, and fraud-label

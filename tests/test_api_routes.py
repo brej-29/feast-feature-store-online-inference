@@ -15,8 +15,10 @@ def test_health_route():
 
 
 def test_predict_route_exists():
+    # 400 = missing entity ids, 503 = model artifact absent; both prove the
+    # route exists and validates input before doing work.
     response = client.post("/api/predict", json={"entity_ids": {}, "request": {}})
-    assert response.status_code in (200, 422)
+    assert response.status_code in (400, 422, 503)
 
 
 @pytest.mark.skipif(

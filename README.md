@@ -149,7 +149,6 @@ A **context system** under `./context/` that documents:
 - Feast CLI helpers:
   - `scripts/feast_apply.sh` → `feast -c feature_repo apply`
   - `scripts/feast_materialize.sh` → `feast -c feature_repo materialize-incremental <now>`
-  - `scripts/feast_materialize_incremental.sh` → incremental materialization for snapshot FeatureViews only (skips gracefully if feature tables are missing)
 
 - Streaming & Feast push:
   - `services/streaming/feast_push.py`:

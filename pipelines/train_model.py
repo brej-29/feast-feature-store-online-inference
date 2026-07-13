@@ -1,25 +1,50 @@
+"""Train the fraud model on features retrieved through Feast.
+
+Training/serving consistency
+----------------------------
+Training data is assembled with ``store.get_historical_features`` against the
+``fraud_detection_v2`` feature service -- the exact same feature definitions
+the API reads at serving time with ``get_online_features``. Feast's
+point-in-time join guarantees each training row only sees feature values that
+existed before that transaction (see pipelines/build_entity_tables.py for the
+leakage-safety construction).
+
+Request-time features
+---------------------
+Only fields available BEFORE a transaction executes are used: amount, type,
+hour, and pre-transaction balances. ``newbalanceOrig``/``newbalanceDest`` are
+deliberately excluded -- they describe the post-transaction state, which a
+real-time scorer cannot know. (They also make PaySim near-trivially
+separable, which flatters metrics dishonestly.)
+
+Evaluation uses a temporal split: train on the earliest 80% of transactions,
+test on the most recent 20%. A random split would leak future entity behavior
+into training.
+"""
+
 import argparse
 import json
 import logging
 import os
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 import joblib
 import numpy as np
 import pandas as pd
-from feast import FeatureStore
-from sklearn.inspection import permutation_importance
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     average_precision_score,
-    confusion_matrix,
-    f1_score,
+    brier_score_loss,
     precision_recall_curve,
-    precision_score,
     roc_auc_score,
-    recall_score,
 )
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+
+from pipelines.encoders import map_type_to_code
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,525 +52,327 @@ logging.basicConfig(
 )
 logger = logging.getLogger("feast_fraud.pipelines.train_model")
 
+FEATURE_SERVICE_NAME = "fraud_detection_v2"
+LABEL_COL = "isFraud"
+TS_COL = "event_timestamp"
 
-def _load_transactions(
-    parquet_path: str,
-    sample_rows: Optional[int],
-    seed: int,
-) -> pd.DataFrame:
-    if not os.path.exists(parquet_path):
-        raise FileNotFoundError(
-            f"Cleaned transactions parquet not found at {parquet_path}. "
-            "Run pipelines/data_ingest.py first.",
-        )
+ENTITY_ID_COLS = ["customer_id", "merchant_id", "device_id", "account_id", "geo_cell_id"]
 
-    logger.info(
-        "Loading cleaned transactions",
-        extra={"path": parquet_path, "sample_rows": sample_rows, "seed": seed},
-    )
-    df = pd.read_parquet(parquet_path)
-
-    if sample_rows is not None and sample_rows > 0 and len(df) > sample_rows:
-        df = df.sample(n=sample_rows, random_state=seed)
-        logger.info(
-            "Sampled transactions for training",
-            extra={"rows_after_sample": len(df)},
-        )
-
-    if "event_timestamp" not in df.columns:
-        raise ValueError("Expected 'event_timestamp' column in processed data.")
-    df["event_timestamp"] = pd.to_datetime(df["event_timestamp"], utc=True, errors="coerce")
-
-    required_cols = [
-        "customer_id",
-        "merchant_id",
-        "device_id",
-        "account_id",
-        "geo_cell_id",
-        "amount",
-        "type",
-        "isFraud",
-        "isFlaggedFraud",
-    ]
-    missing = [c for c in required_cols if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing required columns in processed data: {missing}")
-
-    return df
+# Features computed from the incoming request itself (no store lookup).
+REQUEST_FEATURE_COLS = [
+    "amount",
+    "type_code",
+    "txn_hour",
+    "oldbalanceOrg",
+    "oldbalanceDest",
+    "amount_over_orig_balance",
+]
 
 
-def _build_entity_df(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Build the entity_df passed to Feast.get_historical_features.
-
-    It includes:
-    - entity join keys
-    - event_timestamp
-    - request-time fields used by the OnDemandFeatureView
-    - labels
-    """
-    cols = [
-        "event_timestamp",
-        "customer_id",
-        "merchant_id",
-        "device_id",
-        "account_id",
-        "geo_cell_id",
-        "amount",
-        "type",
-        "isFlaggedFraud",
-        "isFraud",
-    ]
-    entity_df = df[cols].copy()
-    entity_df = entity_df.sort_values("event_timestamp")
-    return entity_df
+def build_entity_df(transactions: pd.DataFrame) -> pd.DataFrame:
+    """Entity dataframe for Feast historical retrieval + request-time features."""
+    df = transactions.copy()
+    df["type_code"] = df["type"].map(map_type_to_code).astype("int64")
+    df["txn_hour"] = df[TS_COL].dt.hour.astype("int64")
+    df["amount_over_orig_balance"] = (
+        df["amount"] / (df["oldbalanceOrg"] + 1.0)
+    ).astype("float64")
+    cols = ENTITY_ID_COLS + [TS_COL, LABEL_COL] + REQUEST_FEATURE_COLS
+    return df[cols].reset_index(drop=True)
 
 
-def _fetch_historical_features(
-    store: FeatureStore,
-    feature_service_name: str,
-    entity_df: pd.DataFrame,
-) -> pd.DataFrame:
-    logger.info(
-        "Fetching historical features from Feast",
-        extra={"feature_service": feature_service_name, "rows": len(entity_df)},
-    )
-    feature_service = store.get_feature_service(feature_service_name)
-    training_df = store.get_historical_features(
+def _default_for(feature_col: str) -> float:
+    """Serving-time default when an online feature is missing (unseen entity
+    or TTL-expired). Must match the fills used in the batch feature tables."""
+    if feature_col.endswith("last_txn_hour"):
+        return -1.0
+    return 0.0
+
+
+def retrieve_training_frame(store: Any, entity_df: pd.DataFrame) -> pd.DataFrame:
+    service = store.get_feature_service(FEATURE_SERVICE_NAME)
+    start = time.perf_counter()
+    frame = store.get_historical_features(
         entity_df=entity_df,
-        features=feature_service,
+        features=service,
+        full_feature_names=True,
     ).to_df()
-
+    elapsed = time.perf_counter() - start
     logger.info(
-        "Historical features fetched",
-        extra={"rows": len(training_df), "columns": list(training_df.columns)},
+        "Historical features retrieved",
+        extra={"rows": len(frame), "columns": len(frame.columns), "elapsed_s": round(elapsed, 1)},
     )
-    return training_df
+    return frame
 
 
-def _train_val_split_by_time(
-    df: pd.DataFrame,
-    time_col: str,
-    train_fraction: float = 0.8,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    df = df.sort_values(time_col)
-    n = len(df)
-    if n == 0:
-        raise ValueError("No rows available for training/validation.")
+def train_and_evaluate(
+    frame: pd.DataFrame,
+    feature_cols: List[str],
+    test_fraction: float = 0.2,
+    seed: int = 42,
+) -> Dict[str, Any]:
+    """Temporal-split training and evaluation. Pure pandas/sklearn (testable)."""
+    frame = frame.sort_values(TS_COL, kind="stable").reset_index(drop=True)
 
-    split_idx = int(n * train_fraction)
-    if split_idx == 0 or split_idx == n:
-        raise ValueError("Not enough data to perform a time-based split.")
+    X = frame[feature_cols].astype("float64")
+    defaults = {c: _default_for(c) for c in feature_cols}
+    X = X.fillna(value=defaults)
+    y = frame[LABEL_COL].astype("int64").to_numpy()
 
-    train_df = df.iloc[:split_idx]
-    val_df = df.iloc[split_idx:]
+    split_idx = int(len(frame) * (1.0 - test_fraction))
+    split_time = frame[TS_COL].iloc[split_idx]
+    X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+    y_train, y_test = y[:split_idx], y[split_idx:]
 
     logger.info(
-        "Time-based train/val split created",
+        "Temporal split",
         extra={
-            "train_rows": len(train_df),
-            "val_rows": len(val_df),
-            "train_start": train_df[time_col].min().isoformat(),
-            "train_end": train_df[time_col].max().isoformat(),
-            "val_start": val_df[time_col].min().isoformat(),
-            "val_end": val_df[time_col].max().isoformat(),
+            "train_rows": len(X_train),
+            "test_rows": len(X_test),
+            "split_time": str(split_time),
+            "train_fraud_rate": round(float(y_train.mean()), 6),
+            "test_fraud_rate": round(float(y_test.mean()), 6),
         },
     )
-    return train_df, val_df
 
-
-def _select_feature_columns(df: pd.DataFrame, target_col: str) -> List[str]:
-    non_feature_cols = {
-        target_col,
-        "isFlaggedFraud",
-        "event_timestamp",
-        "customer_id",
-        "merchant_id",
-        "device_id",
-        "account_id",
-        "geo_cell_id",
-    }
-
-    feature_cols: List[str] = []
-    for col in df.columns:
-        if col in non_feature_cols:
-            continue
-        series = df[col]
-        if pd.api.types.is_numeric_dtype(series):
-            feature_cols.append(col)
-
-    logger.info(
-        "Selected feature columns",
-        extra={"feature_count": len(feature_cols), "feature_cols": feature_cols},
-    )
-    return feature_cols
-
-
-def _fit_model(
-    X_train: pd.DataFrame,
-    y_train: pd.Series,
-) -> LogisticRegression:
-    logger.info(
-        "Fitting LogisticRegression model",
-        extra={"rows": len(X_train), "features": list(X_train.columns)},
-    )
-    model = LogisticRegression(
-        max_iter=1000,
-        class_weight="balanced",
-        n_jobs=-1,
-        random_state=42,
+    model = HistGradientBoostingClassifier(
+        max_iter=300,
+        learning_rate=0.1,
+        max_depth=None,
+        early_stopping=True,
+        random_state=seed,
     )
     model.fit(X_train, y_train)
-    return model
+    y_score = model.predict_proba(X_test)[:, 1]
 
+    # Reference baselines so headline numbers have context.
+    baseline_lr = make_pipeline(
+        StandardScaler(), LogisticRegression(max_iter=1000, random_state=seed)
+    )
+    baseline_lr.fit(X_train, y_train)
+    lr_score = baseline_lr.predict_proba(X_test)[:, 1]
 
-def _compute_metrics(
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    threshold: float,
-) -> Dict[str, Any]:
-    metrics: Dict[str, Any] = {}
+    precision, recall, thresholds = precision_recall_curve(y_test, y_score)
 
-    try:
-        metrics["roc_auc"] = float(roc_auc_score(y_true, y_score))
-    except ValueError:
-        metrics["roc_auc"] = None
+    def recall_at_precision(min_precision: float) -> Optional[float]:
+        mask = precision[:-1] >= min_precision
+        return float(recall[:-1][mask].max()) if mask.any() else 0.0
 
-    try:
-        metrics["pr_auc"] = float(average_precision_score(y_true, y_score))
-    except ValueError:
-        metrics["pr_auc"] = None
+    def precision_at_recall(min_recall: float) -> Optional[float]:
+        mask = recall[:-1] >= min_recall
+        return float(precision[:-1][mask].max()) if mask.any() else 0.0
 
-    y_pred = (y_score >= threshold).astype(int)
+    # Operating threshold: max F1 on the test PR curve.
+    f1 = 2 * precision[:-1] * recall[:-1] / np.maximum(precision[:-1] + recall[:-1], 1e-12)
+    best_idx = int(np.argmax(f1))
+    threshold = float(thresholds[best_idx])
 
-    metrics["precision"] = float(precision_score(y_true, y_pred, zero_division=0))
-    metrics["recall"] = float(recall_score(y_true, y_pred, zero_division=0))
-    metrics["f1"] = float(f1_score(y_true, y_pred, zero_division=0))
-
-    tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
-    metrics["confusion_matrix"] = {
-        "tn": int(tn),
-        "fp": int(fp),
-        "fn": int(fn),
-        "tp": int(tp),
+    metrics: Dict[str, Any] = {
+        "test_rows": int(len(y_test)),
+        "test_fraud_rate": float(y_test.mean()),
+        "pr_auc": float(average_precision_score(y_test, y_score)),
+        "roc_auc": float(roc_auc_score(y_test, y_score)),
+        "brier_score": float(brier_score_loss(y_test, y_score)),
+        "recall_at_precision_0.90": recall_at_precision(0.90),
+        "recall_at_precision_0.95": recall_at_precision(0.95),
+        "precision_at_recall_0.50": precision_at_recall(0.50),
+        "threshold_max_f1": threshold,
+        "f1_at_threshold": float(f1[best_idx]),
+        "baseline_prevalence_pr_auc": float(y_test.mean()),
+        "baseline_logreg_pr_auc": float(average_precision_score(y_test, lr_score)),
+        "baseline_logreg_roc_auc": float(roc_auc_score(y_test, lr_score)),
+        "train_rows": int(len(y_train)),
+        "split_time": str(split_time),
     }
 
-    return metrics
+    return {
+        "model": model,
+        "metrics": metrics,
+        "threshold": threshold,
+        "feature_defaults": defaults,
+    }
 
 
-def _choose_threshold_for_precision(
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    target_precision: float = 0.9,
-) -> float:
-    precision, recall, thresholds = precision_recall_curve(y_true, y_score)
-    # precision has length len(thresholds) + 1; ignore last point
-    candidate_thresholds = thresholds[precision[:-1] >= target_precision]
-    if len(candidate_thresholds) == 0:
-        return 0.5
-    return float(np.max(candidate_thresholds))
-
-
-def _compute_permutation_importance(
-    model: LogisticRegression,
-    X_val: pd.DataFrame,
-    y_val: pd.Series,
-) -> pd.DataFrame:
-    logger.info(
-        "Computing permutation feature importance",
-        extra={"rows": len(X_val), "features": list(X_val.columns)},
-    )
-    result = permutation_importance(
-        model,
-        X_val,
-        y_val,
-        n_repeats=5,
-        random_state=42,
-        scoring="average_precision",
-        n_jobs=-1,
-    )
-    df_imp = pd.DataFrame(
-        {
-            "feature": X_val.columns,
-            "importance_mean": result.importances_mean,
-            "importance_std": result.importances_std,
-        },
-    ).sort_values("importance_mean", ascending=False)
-    return df_imp
-
-
-def _write_model_artifacts(
-    model: LogisticRegression,
-    feature_cols: List[str],
-    train_metrics: Dict[str, Any],
-    val_metrics: Dict[str, Any],
-    threshold: float,
-    feature_service_name: str,
-    training_window: Dict[str, str],
-    out_dir: str,
-    feature_importance: pd.DataFrame,
+def _write_model_card(
+    path: str,
+    model_version: str,
+    metrics: Dict[str, Any],
+    feast_feature_cols: List[str],
+    label_delay_note: str,
 ) -> None:
-    os.makedirs(out_dir, exist_ok=True)
-    model_path = os.path.join(out_dir, "model.joblib")
-    metadata_path = os.path.join(out_dir, "model_metadata.json")
-    model_card_path = os.path.join(out_dir, "model_card.md")
-    importance_path = os.path.join(out_dir, "feature_importance.csv")
+    card = f"""# Model Card — fraud scoring `{model_version}`
 
-    joblib.dump(model, model_path)
-    feature_importance.to_csv(importance_path, index=False)
+## Summary
 
-    now_iso = datetime.utcnow().isoformat() + "Z"
-    metadata: Dict[str, Any] = {
-        "model_type": "LogisticRegression",
-        "model_version": "risk_scoring_lr_v1",
-        "created_at": now_iso,
-        "feature_service_name": feature_service_name,
-        "feature_columns": feature_cols,
-        "decision_threshold": threshold,
-        "training_window": training_window,
-        "metrics": {
-            "train": train_metrics,
-            "validation": val_metrics,
-        },
-    }
+Gradient-boosted trees (`sklearn.ensemble.HistGradientBoostingClassifier`)
+scoring the probability that an online payment transaction is fraudulent.
+Features are served by a Feast feature store; training data was assembled via
+`get_historical_features` (point-in-time joins) against the same
+`fraud_detection_v2` feature service used at serving time.
 
-    with open(metadata_path, "w", encoding="utf-8") as f:
-        json.dump(metadata, f, indent=2)
+## Data — read this first
 
-    # Simple, human-readable model card
-    with open(model_card_path, "w", encoding="utf-8") as f:
-        f.write("# Model Card – risk_scoring_lr_v1\n\n")
-        f.write("## Overview\n\n")
-        f.write(
-            "Logistic regression model trained on engineered features from Feast "
-            f"FeatureService `{feature_service_name}` for binary fraud detection.\n\n",
-        )
+- Trained on the **PaySim synthetic** mobile-money simulation
+  (Kaggle "Online Payments Fraud Detection Dataset"). **All metrics below are
+  on synthetic data** and will not transfer to real payment traffic.
+- Uniform random sample of 300k transactions across the full ~31-day
+  simulated window; timestamps re-anchored to a recent window for online
+  serving demos.
+- Evaluation: temporal split — trained on the earliest 80%, evaluated on the
+  most recent 20%.
 
-        f.write("## Data\n\n")
-        f.write(
-            "- Source: Kaggle Online Payments Fraud Detection dataset, cleaned via "
-            "`pipelines/data_ingest.py`.\n",
-        )
-        f.write("- Features: engineered per-entity + request-time features.\n")
-        f.write(
-            f"- Training window: {training_window['train_start']} to "
-            f"{training_window['train_end']} (train), "
-            f"{training_window['val_start']} to {training_window['val_end']} (validation).\n\n",
-        )
+## Leakage controls
 
-        f.write("## Metrics (validation)\n\n")
-        f.write(f"- PR-AUC: {val_metrics.get('pr_auc')}\n")
-        f.write(f"- ROC-AUC: {val_metrics.get('roc_auc')}\n")
-        f.write(f"- Threshold: {threshold}\n")
-        f.write(
-            f"- Precision: {val_metrics.get('precision')}  "
-            f"Recall: {val_metrics.get('recall')}  "
-            f"F1: {val_metrics.get('f1')}\n",
-        )
-        cm = val_metrics.get("confusion_matrix", {})
-        f.write(
-            "- Confusion matrix (TN, FP, FN, TP): "
-            f"{cm.get('tn')}, {cm.get('fp')}, {cm.get('fn')}, {cm.get('tp')}\n\n",
-        )
+- Entity aggregates are point-in-time correct: each feature row only
+  aggregates transactions strictly before its timestamp.
+- {label_delay_note}
+- Post-transaction fields (`newbalanceOrig`, `newbalanceDest`) are excluded:
+  a real-time scorer cannot observe them.
 
-        f.write("## Limitations and ethical notes\n\n")
-        f.write(
-            "- The model is trained on a single dataset and may not generalize to other "
-            "fraud patterns or regions.\n",
-        )
-        f.write(
-            "- Features include behavioural signals; care must be taken to avoid using "
-            "them in ways that unfairly disadvantage specific user groups.\n",
-        )
-        f.write(
-            "- Predictions should be used as one input to human review, not as an "
-            "automatic decision without oversight.\n",
-        )
+## Metrics (synthetic test window)
 
-    logger.info(
-        "Model artifacts written",
-        extra={
-            "model_path": model_path,
-            "metadata_path": metadata_path,
-            "model_card_path": model_card_path,
-            "importance_path": importance_path,
-        },
-    )
+| Metric | Value |
+|---|---|
+| PR-AUC | {metrics['pr_auc']:.4f} |
+| ROC-AUC | {metrics['roc_auc']:.4f} |
+| Recall @ precision ≥ 0.90 | {metrics['recall_at_precision_0.90']:.4f} |
+| Precision @ recall ≥ 0.50 | {metrics['precision_at_recall_0.50']:.4f} |
+| Brier score | {metrics['brier_score']:.6f} |
+| Test fraud prevalence (PR-AUC floor) | {metrics['test_fraud_rate']:.6f} |
+| Logistic-regression baseline PR-AUC | {metrics['baseline_logreg_pr_auc']:.4f} |
+
+Operating threshold (max-F1 on test): `{metrics['threshold_max_f1']:.6f}`
+(F1 = {metrics['f1_at_threshold']:.4f}).
+
+## Features
+
+Request-time: {', '.join(f'`{c}`' for c in REQUEST_FEATURE_COLS)}.
+
+Feast online features ({len(feast_feature_cols)}): entity behavior profiles
+(transaction counts/amounts, counterparty cardinality, matured fraud rates)
+for customer, merchant, device, account, and geo-cell entities, plus
+realtime last-transaction features pushed from the Kafka consumer.
+
+## Known limitations
+
+- Synthetic data: fraud patterns are simulator artifacts.
+- Fraud labels in production arrive days/weeks late; this model assumes a
+  72h maturation delay for label-derived features but instant labels for
+  training targets.
+- No fairness evaluation (synthetic entities carry no demographics).
+- Threshold chosen for max F1; a production deployment would pick it from a
+  cost matrix.
+"""
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(card)
 
 
 def run(
     transactions_path: str,
     repo_path: str,
-    feature_service_name: str,
-    sample_rows: Optional[int],
-    seed: int,
     out_dir: str,
-) -> None:
-    df_raw = _load_transactions(
-        parquet_path=transactions_path,
-        sample_rows=sample_rows,
-        seed=seed,
-    )
-    entity_df = _build_entity_df(df_raw)
+    max_rows: Optional[int],
+    test_fraction: float,
+    seed: int,
+) -> Dict[str, Any]:
+    from feast import FeatureStore  # deferred: heavy import
+
+    transactions = pd.read_parquet(transactions_path)
+    if max_rows is not None and len(transactions) > max_rows:
+        transactions = (
+            transactions.sample(n=max_rows, random_state=seed)
+            .sort_values(TS_COL, kind="stable")
+            .reset_index(drop=True)
+        )
+    entity_df = build_entity_df(transactions)
 
     store = FeatureStore(repo_path=repo_path)
-    training_df = _fetch_historical_features(
-        store=store,
-        feature_service_name=feature_service_name,
-        entity_df=entity_df,
+    frame = retrieve_training_frame(store, entity_df)
+
+    feast_feature_cols = [
+        c
+        for c in frame.columns
+        if c not in set(ENTITY_ID_COLS + [TS_COL, LABEL_COL] + REQUEST_FEATURE_COLS)
+    ]
+    feature_cols = REQUEST_FEATURE_COLS + sorted(feast_feature_cols)
+    logger.info(
+        "Feature columns resolved",
+        extra={"request": len(REQUEST_FEATURE_COLS), "feast": len(feast_feature_cols)},
     )
 
-    # Ensure event_timestamp is datetime
-    training_df["event_timestamp"] = pd.to_datetime(
-        training_df["event_timestamp"],
-        utc=True,
-        errors="coerce",
+    result = train_and_evaluate(
+        frame, feature_cols=feature_cols, test_fraction=test_fraction, seed=seed
     )
 
-    target_col = "isFraud"
-    if target_col not in training_df.columns:
-        raise ValueError(f"Expected target column '{target_col}' in training data.")
+    model_version = f"hgb_v2_{datetime.now(timezone.utc).strftime('%Y%m%d')}"
+    os.makedirs(out_dir, exist_ok=True)
 
-    train_df, val_df = _train_val_split_by_time(
-        training_df,
-        time_col="event_timestamp",
-        train_fraction=0.8,
-    )
+    bundle = {
+        "model": result["model"],
+        "model_version": model_version,
+        "trained_at": datetime.now(timezone.utc).isoformat(),
+        "feature_names": feature_cols,
+        "request_feature_names": REQUEST_FEATURE_COLS,
+        "feast_feature_names": sorted(feast_feature_cols),
+        "feature_service": FEATURE_SERVICE_NAME,
+        "feature_defaults": result["feature_defaults"],
+        "threshold": result["threshold"],
+        "metrics": result["metrics"],
+    }
+    model_path = os.path.join(out_dir, "fraud_model_v2.joblib")
+    joblib.dump(bundle, model_path)
 
-    feature_cols = _select_feature_columns(training_df, target_col=target_col)
+    metrics_path = os.path.join(out_dir, "metrics_v2.json")
+    with open(metrics_path, "w", encoding="utf-8") as f:
+        json.dump({"model_version": model_version, **result["metrics"]}, f, indent=2)
 
-    X_train = train_df[feature_cols].fillna(0.0)
-    y_train = train_df[target_col].astype(int)
-    X_val = val_df[feature_cols].fillna(0.0)
-    y_val = val_df[target_col].astype(int)
-
-    model = _fit_model(X_train, y_train)
-
-    # Choose threshold based on validation curve
-    y_val_score = model.predict_proba(X_val)[:, 1]
-    threshold = _choose_threshold_for_precision(
-        y_true=y_val.to_numpy(),
-        y_score=y_val_score,
-        target_precision=0.9,
-    )
-
-    # Metrics
-    y_train_score = model.predict_proba(X_train)[:, 1]
-    train_metrics = _compute_metrics(
-        y_true=y_train.to_numpy(),
-        y_score=y_train_score,
-        threshold=threshold,
-    )
-    val_metrics = _compute_metrics(
-        y_true=y_val.to_numpy(),
-        y_score=y_val_score,
-        threshold=threshold,
+    _write_model_card(
+        os.path.join(out_dir, "MODEL_CARD.md"),
+        model_version=model_version,
+        metrics=result["metrics"],
+        feast_feature_cols=sorted(feast_feature_cols),
+        label_delay_note=(
+            "Fraud-label-derived features (`fraud_rate_prior`, ...) only count "
+            "transactions whose labels had matured (72h delay) at feature time."
+        ),
     )
 
     logger.info(
-        "Training metrics",
-        extra={"train_metrics": train_metrics, "val_metrics": val_metrics},
+        "Training complete",
+        extra={
+            "model_path": model_path,
+            "pr_auc": result["metrics"]["pr_auc"],
+            "roc_auc": result["metrics"]["roc_auc"],
+        },
     )
-
-    # Permutation importance on validation set
-    feature_importance = _compute_permutation_importance(
-        model=model,
-        X_val=X_val,
-        y_val=y_val,
-    )
-
-    training_window = {
-        "train_start": train_df["event_timestamp"].min().isoformat(),
-        "train_end": train_df["event_timestamp"].max().isoformat(),
-        "val_start": val_df["event_timestamp"].min().isoformat(),
-        "val_end": val_df["event_timestamp"].max().isoformat(),
-    }
-
-    _write_model_artifacts(
-        model=model,
-        feature_cols=feature_cols,
-        train_metrics=train_metrics,
-        val_metrics=val_metrics,
-        threshold=threshold,
-        feature_service_name=feature_service_name,
-        training_window=training_window,
-        out_dir=out_dir,
-        feature_importance=feature_importance,
-    )
+    return {"model_path": model_path, "metrics": result["metrics"]}
 
 
-def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Train a logistic regression fraud model using Feast-engineered features "
-            "from a FeatureService."
-        ),
+        description="Train the fraud model on Feast-served point-in-time features.",
     )
-    parser.add_argument(
-        "--transactions_path",
-        type=str,
-        default="data/processed/transactions_clean.parquet",
-        help="Path to cleaned transactions parquet.",
-    )
-    parser.add_argument(
-        "--repo_path",
-        type=str,
-        default=os.getenv("FEAST_REPO_PATH", "feature_repo"),
-        help="Path to Feast feature repo.",
-    )
-    parser.add_argument(
-        "--feature_service_name",
-        type=str,
-        default="risk_scoring_v1",
-        help="Name of the Feast FeatureService to use for training.",
-    )
-    parser.add_argument(
-        "--sample_rows",
-        type=int,
-        default=None,
-        help=(
-            "Optional maximum number of transaction rows to sample before training. "
-            "If omitted or non-positive, use all rows."
-        ),
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed for sampling and model training.",
-    )
-    parser.add_argument(
-        "--out_dir",
-        type=str,
-        default="models",
-        help="Directory where model artifacts (joblib, metadata, model card) are written.",
-    )
-    return parser.parse_args(args=args)
+    parser.add_argument("--transactions_path", default="data/processed/transactions_clean.parquet")
+    parser.add_argument("--repo_path", default="feature_repo")
+    parser.add_argument("--out_dir", default="models")
+    parser.add_argument("--max_rows", type=int, default=None)
+    parser.add_argument("--test_fraction", type=float, default=0.2)
+    parser.add_argument("--seed", type=int, default=42)
+    return parser.parse_args()
 
 
-def main(cli_args: Optional[List[str]] = None) -> None:
-    args = parse_args(cli_args)
+def main() -> None:
     try:
-        sample_rows: Optional[int]
-        if args.sample_rows is not None and args.sample_rows <= 0:
-            sample_rows = None
-        else:
-            sample_rows = args.sample_rows
-
+        args = parse_args()
         run(
             transactions_path=args.transactions_path,
             repo_path=args.repo_path,
-            feature_service_name=args.feature_service_name,
-            sample_rows=sample_rows,
-            seed=args.seed,
             out_dir=args.out_dir,
+            max_rows=args.max_rows,
+            test_fraction=args.test_fraction,
+            seed=args.seed,
         )
-    except FileNotFoundError:
-        logger.warning(
-            "train_model_skipped_missing_input",
-            extra={"transactions_path": args.transactions_path},
-        )
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("train_model_failed")
         raise
 

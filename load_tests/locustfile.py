@@ -6,11 +6,7 @@ from typing import Any, Dict
 
 from locust import HttpUser, between, task
 
-
-def _deterministic_hash(value: str) -> str:
-    import hashlib
-
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+from pipelines.encoders import deterministic_hash
 
 
 class FraudUser(HttpUser):
@@ -20,7 +16,7 @@ class FraudUser(HttpUser):
     Usage:
 
     ```bash
-    TARGET_HOST=http://localhost:7860 locust -f load_tests/locustfile.py
+    TARGET_HOST=http://localhost:8000 locust -f load_tests/locustfile.py
     ```
     """
 
@@ -28,32 +24,29 @@ class FraudUser(HttpUser):
 
     def on_start(self) -> None:
         # TARGET_HOST allows overriding the base URL without editing this file.
-        self.host = os.getenv("TARGET_HOST", "http://localhost:7860")
+        self.host = os.getenv("TARGET_HOST", "http://localhost:8000")
 
     @task
     def predict_fraud(self) -> None:
         amount = random.uniform(10.0, 5000.0)
-        tx_type = random.choice(["PAYMENT", "TRANSFER", "CASH_OUT", "CASH_IN", "DEBIT"])
+        tx_type = random.choice(["PAYMENT", "TRANSFER", "CASH_OUT", "CASH_IN"])
         name_orig = f"CUST_{random.randint(1, 10_000):06d}"
         name_dest = f"MER_{random.randint(1, 5_000):06d}"
 
-        customer_id = name_orig
-        account_id = name_orig
-        merchant_id = name_dest
-        device_id = _deterministic_hash(f"{name_orig}|{name_dest}")
-        geo_cell_id = _deterministic_hash(name_dest)
-
         payload: Dict[str, Any] = {
             "entity_ids": {
-                "customer_id": customer_id,
-                "merchant_id": merchant_id,
-                "device_id": device_id,
-                "account_id": account_id,
-                "geo_cell_id": geo_cell_id,
+                "customer_id": name_orig,
+                "merchant_id": name_dest,
+                "account_id": name_orig,
+                "device_id": deterministic_hash(f"{name_orig}|{name_dest}"),
+                "geo_cell_id": deterministic_hash(name_dest),
             },
-            "amount": amount,
-            "type": tx_type,
-            "isFlaggedFraud": 0,
+            "request": {
+                "amount": amount,
+                "type": tx_type,
+                "oldbalanceOrg": random.uniform(0.0, 20000.0),
+                "oldbalanceDest": random.uniform(0.0, 20000.0),
+            },
         }
 
         self.client.post("/api/predict", json=payload)

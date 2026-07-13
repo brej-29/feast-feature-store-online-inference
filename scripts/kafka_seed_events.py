@@ -33,7 +33,7 @@ def main() -> None:
     parser.add_argument(
         "--brokers",
         type=str,
-        default=os.getenv("KAFKA_BROKERS", "localhost:19092"),
+        default=os.getenv("KAFKA_BROKERS", "localhost:9092"),
         help="Kafka bootstrap servers (comma-separated).",
     )
     parser.add_argument(

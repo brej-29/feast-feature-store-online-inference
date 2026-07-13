@@ -182,88 +182,146 @@ Each decision should have:
 
 ---
 
-## D005 – Windowed feature engineering and leakage-aware design
+## D005 – Point-in-time entity features with label maturation delay
 
-- **Date**: 2026-01-26
+- **Date**: 2026-07-12
 - **Status**: accepted
 - **Context**:
-  - We want production-style, time-windowed features (velocity, balance dynamics,
-    cross-entity consistency) for multiple entities while avoiding label leakage from
-    the future into the past.
-  - The Kaggle dataset provides event timestamps (derived from `step`) and fraud
-    labels (`isFraud`, `isFlaggedFraud`), and we already have entity IDs per D004.
+  - The v1 entity tables aggregated over the FULL dataset — including each
+    row's own fraud label — and served `fraud_rate` as a feature. That is
+    target leakage: the model would be scored on information unavailable at
+    prediction time, inflating offline metrics and collapsing in production.
 - **Options considered**:
-  - **Option A** – Build only static per-entity aggregates (one row per entity).
-    - Pros:
-      - Simple to compute and store.
-    - Cons:
-      - Loses temporal dynamics (recent velocity vs. long-term behaviour).
-      - Harder to support time-based model evaluation.
-  - **Option B** – Build fully dynamic, per-transaction features using time-based
-    rolling windows over sorted event time.
-    - Pros:
-      - Captures recent and longer-term behaviour (1h/6h/24h/7d windows).
-      - Naturally supports time-based train/validation splits.
-    - Cons:
-      - More complex and compute-intensive.
+  - **Option A** – Static temporal split: compute aggregates on an early
+    "history" window only, train on a later window.
+    - Pros: simple. Cons: features go stale; doesn't exercise Feast's
+      point-in-time join; weaker portfolio story.
+  - **Option B** – Per-(entity, timestamp) expanding aggregates over strictly
+    prior transactions, with a maturation delay on label-derived features.
+    - Pros: correct by construction; `get_historical_features` picks the
+      right row for any training timestamp; mirrors how real fraud systems
+      handle delayed chargeback labels. Cons: larger feature tables, more
+      complex builder.
 - **Decision**:
-  - Adopt **Option B** with pandas-based time-windowed rolling features per entity:
-    - Customers: transaction counts and amount stats over multiple windows, unique
-      counterparties, night/weekend ratios, and high-risk type ratios.
-    - Merchants, devices, accounts, and geo cells: tailored velocity, balance, and
-      cross-entity features.
-  - Use only past and current information in the rolling windows (no lookahead),
-    to avoid label leakage from future transactions.
-  - Introduce an `OnDemandFeatureView` for request-time transforms (log-amount,
-    hour-of-day encodings, weekend/night flags, type codes) to keep client payloads
-    simple and reuse the same logic for historical and online retrieval.
+  - Option B, implemented in `pipelines/build_entity_tables.py`. Behavioral
+    aggregates use transactions with `ts < t`; fraud-label aggregates only
+    count transactions matured by `t - 72h` (configurable
+    `--label_delay_hours`). Verified by `tests/test_point_in_time.py`.
 - **Consequences / Follow-ups**:
-  - `pipelines/feature_engineering.py` is now the canonical place for engineered
-    feature definitions; changes here must remain time-respecting and be reflected in
-    the Feast `FeatureView` schemas.
-  - Training and serving should both rely on `risk_scoring_v1` FeatureService, which
-    bundles multi-entity features and on-demand transforms.
-  - Any future change to window definitions or feature semantics must be recorded
-    as a new decision (e.g., D006+) and treated as a versioned change to the
-    feature tables and FeatureViews.
+  - Feature tables grow to one row per entity-timestamp (~300k rows/entity
+    at the current sample size) — acceptable for parquet + free-tier Postgres.
+  - v1 feature views were removed; consumers must use `*_profile_v2`.
 
 ---
 
-## D006 – Training pipeline, metrics, and threshold selection
+## D006 – Exclude post-transaction balance fields from model features
 
-- **Date**: 2026-01-26
+- **Date**: 2026-07-12
 - **Status**: accepted
 - **Context**:
-  - We need a reproducible training pipeline that uses the same Feast feature
-    definitions as online serving and provides fraud-focused metrics.
-  - The primary evaluation metric should be PR-AUC, with ROC-AUC as secondary
-    and clear precision/recall/F1 at an operational threshold.
-- **Options considered**:
-  - **Option A** – Ad-hoc notebooks only, with manual feature joins.
-    - Cons:
-      - Easy to drift away from serving-time feature definitions.
-      - Harder to reproduce training runs from CI.
-  - **Option B** – Scripted pipeline using `FeatureStore.get_historical_features`
-    and a simple model, with metadata and metrics logged to disk.
-    - Pros:
-      - Ensures parity with serving-time FeatureServices.
-      - Easy to plug into CI or scheduled jobs.
+  - `newbalanceOrig`/`newbalanceDest` describe the state AFTER a transaction
+    executes. A real-time scorer decides before execution, so these fields
+    are unavailable at serving time. They also make PaySim near-trivially
+    separable, producing dishonest headline metrics.
 - **Decision**:
-  - Adopt **Option B**:
-    - Implement `pipelines/train_model.py` that:
-      - Loads `transactions_clean.parquet`.
-      - Builds `entity_df` and calls `get_historical_features` on `risk_scoring_v1`.
-      - Splits train/validation **by time** (not random).
-      - Trains a logistic regression with `class_weight='balanced'`.
-      - Chooses a decision threshold targeting ~0.9 precision on the validation set.
-      - Computes PR-AUC, ROC-AUC, precision, recall, F1, and confusion matrix.
-      - Computes permutation feature importance on the validation split.
-      - Writes `models/model.joblib`, `models/model_metadata.json`,
-        `models/feature_importance.csv`, and a human-readable model card.
+  - The model uses only request-time fields (`amount`, `type`, hour,
+    pre-transaction balances) plus Feast-served historical features.
+    Enforced in `pipelines/train_model.py::build_entity_df` and tested.
 - **Consequences / Follow-ups**:
-  - Serving must read `model_metadata.json` to know the feature ordering and
-    decision threshold used during training.
-  - Future model versions (e.g., tree-based, calibrated models) should follow the
-    same artifact schema and decision logging pattern.
-  - CI and scheduled jobs can call the training pipeline to refresh models when
-    new data appears.
+  - Headline metrics are lower than typical PaySim notebooks (PR-AUC ~0.49
+    vs. inflated ~0.99) — this is intentional and documented in the model
+    card as an honesty feature.
+
+---
+
+## D007 – Committed model artifact bundle with feature contract
+
+- **Date**: 2026-07-12
+- **Status**: accepted
+- **Context**:
+  - Serving needs the trained model plus the exact feature names/order,
+    defaults, and threshold used at training time. Free-tier deployment has
+    no artifact registry.
+- **Options considered**:
+  - **Option A** – External registry (MLflow, HF Hub model repo). Deferred:
+    adds infra for Phase 2+.
+  - **Option B** – Commit a small joblib bundle (`models/fraud_model_v2.joblib`,
+    ~76KB) carrying model + feature contract + metrics, plus a model card.
+- **Decision**:
+  - Option B for now. The bundle is the single source of truth the API loads;
+    serving cannot silently drift from training because feature names and
+    defaults travel with the model.
+- **Consequences / Follow-ups**:
+  - Revisit with MLflow or HF Hub in a later phase; keep bundle size small.
+
+---
+
+## D008 – Uniform time sampling and recent-anchored timestamps
+
+- **Date**: 2026-07-12
+- **Status**: accepted
+- **Context**:
+  - The previous chunked sampler silently kept only the FIRST ~13 hours of
+    the 31-day simulation (200k head rows), breaking temporal splits and
+    entity history. Also, 2017-anchored timestamps make online-store TTLs and
+    `materialize-incremental` meaningless in a live demo.
+- **Decision**:
+  - `pipelines/data_ingest.py` now defaults to `--sample_strategy uniform`
+    (random sample across the full simulated window, sorted by step) and
+    `--base_time recent` (anchor the window to end roughly now). The legacy
+    behavior remains available via `--sample_strategy head` /
+    `--base_time <ISO>`.
+- **Consequences / Follow-ups**:
+  - Data must be re-ingested when the demo window drifts too far into the
+    past (document a refresh command in deployment docs).
+
+---
+
+## D009 – Superseded a parallel feature-engineering/training implementation on merge
+
+- **Date**: 2026-07-12
+- **Status**: accepted
+- **Context**:
+  - While Phase 1 was in progress on this branch, a separate PR
+    (`cosine/feat/step3-9-complete-project`) was merged directly into `main`,
+    adding its own windowed feature engineering (`pipelines/feature_engineering.py`),
+    Feast views (`*_features_fv_v1`), on-demand view, and training pipeline
+    targeting a `risk_scoring_v1` feature service.
+  - Reconciling this branch with `main` required a decision on which
+    implementation to keep going forward.
+- **Findings**:
+  - The parallel implementation reintroduces exactly the leakage classes D005/D006
+    (this document) were written to fix:
+    - `mch_fraud_rate_7d` is an **unshifted** rolling mean of `isFraud` — a
+      time-indexed pandas `.rolling(window).mean()` includes the current row,
+      so this feature contains the label of the very transaction being scored.
+    - `acct_org_balance_delta` / `acct_dest_balance_delta` are computed from
+      `newbalanceOrig`/`newbalanceDest`, i.e. **post-transaction** state,
+      unavailable to a real-time scorer (same issue as D006 above).
+  - Its `*_profile_v1` views (also leaky — full-dataset `fraud_rate`) were left
+    in place rather than removed.
+- **Decision**:
+  - Keep this branch's point-in-time correct pipeline, `*_profile_v2` views, and
+    `fraud_detection_v2` training/serving path as canonical. Remove the parallel
+    implementation's leakage-prone modules and their direct tests:
+    `pipelines/feature_engineering.py`, `feature_repo/on_demand_feature_views.py`,
+    `scripts/feast_materialize_incremental.sh`,
+    `notebooks/02_training_and_feature_importance.ipynb`, and
+    `tests/test_api_contracts.py`, `tests/test_feature_engineering_schema.py`,
+    `tests/test_model_artifact_schema.py`, `tests/test_predict_route_smoke.py`
+    (each asserts against the removed schema/artifacts).
+  - Keep the parallel PR's genuinely additive, non-conflicting assets: CI
+    workflows (`materialize.yml`, `drift.yml`, adapted to this branch's
+    commands), `monitoring/drift_report.py`, `load_tests/locustfile.py` and
+    `scripts/benchmark_predict.py` (adapted to this branch's request schema),
+    `scripts/export_feature_catalog.py` (introspection-based, name-agnostic),
+    and deployment docs.
+  - Docs that documented only the removed pipeline
+    (`docs/ops_materialization.md`, `docs/feature_importance.md`,
+    `context/09_LOCAL_RUN_AND_TEST.md`) were removed rather than left stale;
+    Phase 2/4 should write their replacements against the verified v2 commands.
+- **Consequences / Follow-ups**:
+  - `main` briefly contained the leaky parallel implementation between the two
+    PRs' merges; this decision documents why it was not carried forward.
+  - Phase 2 should add a CI job that actually runs `pytest`, since neither
+    implementation had one.

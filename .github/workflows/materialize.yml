@@ -26,12 +26,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run feature engineering (sample mode; skip if input missing)
+      - name: Rebuild point-in-time entity feature tables (skip if no processed data)
         run: |
-          python pipelines/feature_engineering.py \
-            --skip_if_missing_input \
-            --sample_rows 50000 \
-            --max_entities 2000
+          if [ ! -f data/processed/transactions_clean.parquet ]; then
+            echo "data/processed/transactions_clean.parquet not found (raw data is not checked into git)."
+            echo "Skipping pipelines/build_entity_tables.py."
+            exit 0
+          fi
+          python -m pipelines.build_entity_tables
 
       - name: Feast apply + materialize (if Postgres configured)
         env:
@@ -49,5 +51,5 @@ jobs:
           echo "Running 'feast apply' against Postgres-hosted online store..."
           bash scripts/feast_apply.sh
 
-          echo "Running incremental materialization for snapshot FeatureViews..."
-          bash scripts/feast_materialize_incremental.sh
+          echo "Running incremental materialization for v2 feature views..."
+          bash scripts/feast_materialize.sh

@@ -70,11 +70,12 @@ Typical workflow:
 
 1. On a local machine or CI runner:
    - Run `pipelines/data_ingest.py` to produce `transactions_clean.parquet`.
-   - Run `pipelines/feature_engineering.py` to build `feature_tables`.
+   - Run `pipelines/build_entity_tables.py` to build the point-in-time correct
+     entity feature tables.
    - Run `scripts/feast_apply.sh` to apply the Feast repo (pointed at your Postgres).
-   - Run `scripts/feast_materialize_incremental.sh` to backfill the online store.
-   - Run `pipelines/train_model.py` to produce `models/model.joblib` and metadata.
-2. Upload `models/` artifacts (and optionally registry / feature tables) to a
+   - Run `scripts/feast_materialize.sh` to backfill the online store.
+   - Run `pipelines/train_model.py` to produce `models/fraud_model_v2.joblib`.
+2. Commit or upload `models/` artifacts (and optionally the registry) to a
    storage location accessible by the Space, or bake them into the image.
 
 Out of the box, this repo focuses on:

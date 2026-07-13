@@ -1,118 +1,96 @@
 from datetime import timedelta
+from typing import List
 
 from feast import FeatureView, Field, PushSource
 from feast.types import Float32, Int64
 
 from data_sources import (
     account_features_source,
-    account_features_v1_source,
     customer_features_source,
-    customer_features_v1_source,
     device_features_source,
-    device_features_v1_source,
     geocell_features_source,
-    geocell_features_v1_source,
     merchant_features_source,
-    merchant_features_v1_source,
 )
 from entities import account, customer, device, geocell, merchant
 
+# v2 feature views are point-in-time correct: each source row holds
+# aggregates over that entity's STRICTLY PRIOR transactions, and fraud-label
+# aggregates additionally respect a label maturation delay (see
+# pipelines/build_entity_tables.py). v1 views were removed because they
+# leaked the target (fraud_rate over the full dataset, including the row
+# being scored).
 
-# ---------------------------------------------------------------------------
-# Step 1 snapshot FeatureViews (simple aggregates, kept for backwards
-# compatibility and exploratory analysis).
-# ---------------------------------------------------------------------------
+# TTL must cover gaps between an entity's consecutive transactions across the
+# ~31-day simulated window; entities inactive longer than this read as null
+# (treated as "no known history") which is the safe default for fraud.
+PROFILE_TTL = timedelta(days=90)
 
-customer_profile_v1 = FeatureView(
-    name="customer_profile_v1",
+
+def _profile_schema() -> List[Field]:
+    return [
+        Field(name="txn_count_prior", dtype=Int64),
+        Field(name="amount_sum_prior", dtype=Float32),
+        Field(name="amount_mean_prior", dtype=Float32),
+        Field(name="amount_max_prior", dtype=Float32),
+        Field(name="unique_counterparty_count_prior", dtype=Int64),
+        Field(name="flagged_rate_prior", dtype=Float32),
+        Field(name="entity_age_hours", dtype=Float32),
+        Field(name="matured_txn_count_prior", dtype=Int64),
+        Field(name="fraud_txn_count_prior", dtype=Int64),
+        Field(name="fraud_rate_prior", dtype=Float32),
+    ]
+
+
+customer_profile_v2 = FeatureView(
+    name="customer_profile_v2",
     entities=[customer],
-    ttl=timedelta(days=7),
-    schema=[
-        Field(name="txn_count_total", dtype=Int64),
-        Field(name="amount_sum_total", dtype=Float32),
-        Field(name="amount_mean", dtype=Float32),
-        Field(name="amount_max", dtype=Float32),
-        Field(name="fraud_rate", dtype=Float32),
-        Field(name="flagged_rate", dtype=Float32),
-        Field(name="unique_counterparty_count", dtype=Int64),
-    ],
+    ttl=PROFILE_TTL,
+    schema=_profile_schema(),
     source=customer_features_source,
     online=True,
 )
 
-merchant_profile_v1 = FeatureView(
-    name="merchant_profile_v1",
+merchant_profile_v2 = FeatureView(
+    name="merchant_profile_v2",
     entities=[merchant],
-    ttl=timedelta(days=7),
-    schema=[
-        Field(name="txn_count_total", dtype=Int64),
-        Field(name="amount_sum_total", dtype=Float32),
-        Field(name="amount_mean", dtype=Float32),
-        Field(name="amount_max", dtype=Float32),
-        Field(name="fraud_rate", dtype=Float32),
-        Field(name="flagged_rate", dtype=Float32),
-        Field(name="unique_counterparty_count", dtype=Int64),
-    ],
+    ttl=PROFILE_TTL,
+    schema=_profile_schema(),
     source=merchant_features_source,
     online=True,
 )
 
-device_profile_v1 = FeatureView(
-    name="device_profile_v1",
+device_profile_v2 = FeatureView(
+    name="device_profile_v2",
     entities=[device],
-    ttl=timedelta(days=7),
-    schema=[
-        Field(name="txn_count_total", dtype=Int64),
-        Field(name="amount_sum_total", dtype=Float32),
-        Field(name="amount_mean", dtype=Float32),
-        Field(name="amount_max", dtype=Float32),
-        Field(name="fraud_rate", dtype=Float32),
-        Field(name="flagged_rate", dtype=Float32),
-        Field(name="unique_counterparty_count", dtype=Int64),
-    ],
+    ttl=PROFILE_TTL,
+    schema=_profile_schema(),
     source=device_features_source,
     online=True,
 )
 
-account_profile_v1 = FeatureView(
-    name="account_profile_v1",
+account_profile_v2 = FeatureView(
+    name="account_profile_v2",
     entities=[account],
-    ttl=timedelta(days=7),
-    schema=[
-        Field(name="txn_count_total", dtype=Int64),
-        Field(name="amount_sum_total", dtype=Float32),
-        Field(name="amount_mean", dtype=Float32),
-        Field(name="amount_max", dtype=Float32),
-        Field(name="fraud_rate", dtype=Float32),
-        Field(name="flagged_rate", dtype=Float32),
-        Field(name="unique_counterparty_count", dtype=Int64),
-    ],
+    ttl=PROFILE_TTL,
+    schema=_profile_schema(),
     source=account_features_source,
     online=True,
 )
 
-geocell_profile_v1 = FeatureView(
-    name="geocell_profile_v1",
+geocell_profile_v2 = FeatureView(
+    name="geocell_profile_v2",
     entities=[geocell],
-    ttl=timedelta(days=7),
-    schema=[
-        Field(name="txn_count_total", dtype=Int64),
-        Field(name="amount_sum_total", dtype=Float32),
-        Field(name="amount_mean", dtype=Float32),
-        Field(name="amount_max", dtype=Float32),
-        Field(name="fraud_rate", dtype=Float32),
-        Field(name="flagged_rate", dtype=Float32),
-        Field(name="unique_counterparty_count", dtype=Int64),
-    ],
+    ttl=PROFILE_TTL,
+    schema=_profile_schema(),
     source=geocell_features_source,
     online=True,
 )
 
-
-# ---------------------------------------------------------------------------
-# Real-time PushSource FeatureView for last-transaction features.
-# ---------------------------------------------------------------------------
-
+# Realtime last-transaction features. The batch source (customer feature
+# table) provides the point-in-time historical values used at TRAINING time;
+# the Kafka consumer pushes fresh values through this PushSource at SERVING
+# time. Same feature names, same encoding (pipelines/encoders.py) -- that is
+# the training/serving consistency contract.
 customer_realtime_push = PushSource(
     name="customer_realtime_push",
     batch_source=customer_features_source,
@@ -121,7 +99,7 @@ customer_realtime_push = PushSource(
 customer_realtime_v1 = FeatureView(
     name="customer_realtime_v1",
     entities=[customer],
-    ttl=timedelta(hours=1),
+    ttl=timedelta(hours=24),
     schema=[
         Field(name="last_txn_amount", dtype=Float32),
         Field(name="last_txn_type_code", dtype=Int64),
@@ -129,109 +107,5 @@ customer_realtime_v1 = FeatureView(
         Field(name="last_txn_is_flagged", dtype=Int64),
     ],
     source=customer_realtime_push,
-    online=True,
-)
-
-
-# ---------------------------------------------------------------------------
-# Step 3: windowed, production-style FeatureViews backed by *_features_v1
-# tables. These are the primary inputs to the risk_scoring FeatureServices.
-# ---------------------------------------------------------------------------
-
-customer_features_fv_v1 = FeatureView(
-    name="customer_features_fv_v1",
-    entities=[customer],
-    ttl=timedelta(days=7),
-    schema=[
-        Field(name="cust_tx_count_1h", dtype=Float32),
-        Field(name="cust_tx_count_6h", dtype=Float32),
-        Field(name="cust_tx_count_24h", dtype=Float32),
-        Field(name="cust_tx_count_7d", dtype=Float32),
-        Field(name="cust_tx_amount_sum_1h", dtype=Float32),
-        Field(name="cust_tx_amount_sum_6h", dtype=Float32),
-        Field(name="cust_tx_amount_sum_24h", dtype=Float32),
-        Field(name="cust_tx_amount_sum_7d", dtype=Float32),
-        Field(name="cust_tx_amount_mean_24h", dtype=Float32),
-        Field(name="cust_tx_amount_mean_7d", dtype=Float32),
-        Field(name="cust_tx_amount_max_24h", dtype=Float32),
-        Field(name="cust_tx_amount_max_7d", dtype=Float32),
-        Field(name="cust_unique_merchants_24h", dtype=Float32),
-        Field(name="cust_unique_merchants_7d", dtype=Float32),
-        Field(name="cust_night_tx_ratio_7d", dtype=Float32),
-        Field(name="cust_type_payment_ratio_7d", dtype=Float32),
-        Field(name="cust_type_transfer_ratio_7d", dtype=Float32),
-        Field(name="cust_type_cash_out_ratio_7d", dtype=Float32),
-        Field(name="cust_type_cash_in_ratio_7d", dtype=Float32),
-        Field(name="cust_type_debit_ratio_7d", dtype=Float32),
-        Field(name="cust_to_merchant_repeat_ratio_7d", dtype=Float32),
-        Field(name="cust_high_risk_type_ratio_7d", dtype=Float32),
-    ],
-    source=customer_features_v1_source,
-    online=True,
-)
-
-merchant_features_fv_v1 = FeatureView(
-    name="merchant_features_fv_v1",
-    entities=[merchant],
-    ttl=timedelta(days=7),
-    schema=[
-        Field(name="mch_tx_count_24h", dtype=Float32),
-        Field(name="mch_tx_count_7d", dtype=Float32),
-        Field(name="mch_amount_mean_7d", dtype=Float32),
-        Field(name="mch_unique_customers_7d", dtype=Float32),
-        Field(name="mch_fraud_rate_7d", dtype=Float32),
-    ],
-    source=merchant_features_v1_source,
-    online=True,
-)
-
-device_features_fv_v1 = FeatureView(
-    name="device_features_fv_v1",
-    entities=[device],
-    ttl=timedelta(days=7),
-    schema=[
-        Field(name="dev_tx_count_10m", dtype=Float32),
-        Field(name="dev_tx_count_1h", dtype=Float32),
-        Field(name="dev_tx_count_24h", dtype=Float32),
-        Field(name="dev_unique_customers_24h", dtype=Float32),
-        Field(name="dev_unique_customers_7d", dtype=Float32),
-        Field(name="dev_amount_max_24h", dtype=Float32),
-    ],
-    source=device_features_v1_source,
-    online=True,
-)
-
-account_features_fv_v1 = FeatureView(
-    name="account_features_fv_v1",
-    entities=[account],
-    ttl=timedelta(days=7),
-    schema=[
-        Field(name="acct_org_balance_delta", dtype=Float32),
-        Field(name="acct_dest_balance_delta", dtype=Float32),
-        Field(name="acct_balance_delta_mean_24h", dtype=Float32),
-        Field(name="acct_balance_delta_mean_7d", dtype=Float32),
-        Field(name="acct_balance_delta_abs_mean_7d", dtype=Float32),
-        Field(name="acct_insufficient_funds_rate_24h", dtype=Float32),
-        Field(name="acct_insufficient_funds_rate_7d", dtype=Float32),
-        Field(name="acct_tx_count_24h", dtype=Float32),
-        Field(name="acct_tx_count_7d", dtype=Float32),
-        Field(name="acct_tx_amount_sum_24h", dtype=Float32),
-        Field(name="acct_tx_amount_sum_7d", dtype=Float32),
-    ],
-    source=account_features_v1_source,
-    online=True,
-)
-
-geocell_features_fv_v1 = FeatureView(
-    name="geocell_features_fv_v1",
-    entities=[geocell],
-    ttl=timedelta(days=7),
-    schema=[
-        Field(name="geo_tx_count_24h", dtype=Float32),
-        Field(name="geo_tx_count_7d", dtype=Float32),
-        Field(name="geo_unique_customers_7d", dtype=Float32),
-        Field(name="geo_amount_mean_7d", dtype=Float32),
-    ],
-    source=geocell_features_v1_source,
     online=True,
 )

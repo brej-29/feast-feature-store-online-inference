@@ -35,87 +35,97 @@ Use reverse chronological order (newest at the top).
 
 ---
 
-## Step 5–8 – Training pipeline, online serving, performance, and monitoring
+## Step 4 – Reconcile with a parallel PR merged directly to main
 
-- **Date**: 2026-01-26
-- **Agent**: Cosine AI (Genie)
+- **Date**: 2026-07-12
+- **Agent**: Claude Code (with human review)
 - **Context used**:
-  - context/00_PROJECT_GOAL.md
-  - context/01_ARCHITECTURE.md
-  - context/02_FREE_TIER_CONSTRAINTS.md
-  - context/03_COSINE_TASK_PROTOCOL.md
-  - context/04_DATASET_PLAN.md
-  - context/05_METRICS_AND_EVAL.md
-  - context/07_DECISIONS.md
+  - context/07_DECISIONS.md (D009)
 - **Summary**:
-  - Implemented `pipelines/train_model.py` to train a logistic regression model using Feast `risk_scoring_v1` features, with time-based train/validation split, PR-AUC/ROC-AUC metrics, threshold selection targeting high precision, and permutation feature importance.
-  - Added model artifacts under `models/` (`model.joblib`, `model_metadata.json`, `feature_importance.csv`) and a lightweight model card; created tests to validate metadata schema.
-  - Upgraded FastAPI `/api/predict` to use Feast online features + trained model, returning structured latency breakdowns and wiring to the Gradio UI; added `/api/health` and `/api/push` for scoped health checks and realtime Feast pushes.
-  - Extended the Gradio app (`app.py`) to map raw inputs into entity IDs consistent with the offline pipeline and to display prediction + latency information.
-  - Introduced load/performance tooling: `load_tests/locustfile.py`, `scripts/benchmark_predict.py`, and `docs/performance_testing.md`.
-  - Added a drift reporting script (`monitoring/drift_report.py`) using Evidently, plus a GitHub Actions workflow (`.github/workflows/drift.yml`) that generates and uploads drift reports as artifacts.
-  - Documented operational materialization (`docs/ops_materialization.md`), HF deployment (`docs/HF_DEPLOYMENT.md`, `deploy/SPACE_README.md`), and refined `.env.example` for local vs. managed Postgres/Kafka settings.
+  - While Step 3 (below) was in progress on its own branch, a separate PR
+    (`cosine/feat/step3-9-complete-project`) was merged directly to `main`,
+    adding a parallel feature-engineering/training/serving implementation
+    that reintroduced target leakage (see D009 for specifics).
+  - Merged `main` into this branch. Kept this branch's point-in-time correct
+    pipeline and `fraud_detection_v2` service as canonical; removed the
+    parallel implementation's leaky modules and their direct tests; kept its
+    genuinely additive, non-conflicting assets (CI workflows, drift
+    monitoring, load testing, feature catalog exporter), adapted to this
+    branch's commands and request schema.
+  - Removed docs that only documented the removed pipeline rather than
+    leaving them stale (`docs/ops_materialization.md`,
+    `docs/feature_importance.md`, `context/09_LOCAL_RUN_AND_TEST.md`) —
+    Phase 2/4 will write their replacements against the verified v2 commands.
 - **Files touched (high level)**:
-  - `pipelines/train_model.py`
-  - `models/*` (generated artifacts, not committed)
-  - `services/api/app/main.py`
-  - `app.py`
-  - `scripts/feast_materialize_incremental.sh`
-  - `.github/workflows/materialize.yml`
-  - `monitoring/drift_report.py`
-  - `.github/workflows/drift.yml`
-  - `load_tests/locustfile.py`
-  - `scripts/benchmark_predict.py`
-  - `scripts/kafka_seed_events.py`
-  - `docs/ops_materialization.md`
-  - `docs/performance_testing.md`
-  - `docs/HF_DEPLOYMENT.md`
-  - `deploy/SPACE_README.md`
-  - `.env.example`
-  - `requirements.txt`
-  - `tests/test_api_contracts.py`
-  - `tests/test_predict_route_smoke.py`
-  - `tests/test_model_artifact_schema.py`
-  - `tests/test_train_pipeline_import.py`
+  - Removed: `pipelines/feature_engineering.py`, `feature_repo/on_demand_feature_views.py`,
+    `scripts/feast_materialize_incremental.sh`, `notebooks/02_training_and_feature_importance.ipynb`,
+    `tests/test_api_contracts.py`, `tests/test_feature_engineering_schema.py`,
+    `tests/test_model_artifact_schema.py`, `tests/test_predict_route_smoke.py`,
+    `docs/ops_materialization.md`, `docs/feature_importance.md`, `context/09_LOCAL_RUN_AND_TEST.md`
+  - Kept/adapted: `.github/workflows/materialize.yml`, `.github/workflows/drift.yml`,
+    `monitoring/drift_report.py`, `load_tests/locustfile.py`, `scripts/benchmark_predict.py`,
+    `scripts/export_feature_catalog.py`, `scripts/kafka_seed_events.py`,
+    `docs/HF_DEPLOYMENT.md`, `deploy/SPACE_README.md`, `docs/performance_testing.md`
 - **Decisions referenced/added**:
-  - D005 – Windowed feature engineering and leakage-aware design.
-  - D006 – Training pipeline, metrics, and threshold selection.
+  - D009 – Superseded a parallel feature-engineering/training implementation on merge.
 
 ---
 
-## Step 3 – Windowed feature engineering, Feast feature services, and training-ready catalog
+## Step 3 – Phase 1: leakage-safe features, real model, wired serving
 
-- **Date**: 2026-01-26
-- **Agent**: Cosine AI (Genie)
+- **Date**: 2026-07-12
+- **Agent**: Claude Code (with human review)
 - **Context used**:
   - context/00_PROJECT_GOAL.md
-  - context/01_ARCHITECTURE.md
-  - context/02_FREE_TIER_CONSTRAINTS.md
-  - context/03_COSINE_TASK_PROTOCOL.md
   - context/04_DATASET_PLAN.md
   - context/05_METRICS_AND_EVAL.md
   - context/07_DECISIONS.md
 - **Summary**:
-  - Implemented `pipelines/feature_engineering.py` to build windowed, production-style feature tables for five entities (customer, merchant, device, account, geo cell) with 50+ engineered features, sample-mode controls, and JSON schema snapshots.
-  - Added new Feast `FileSource`s for `*_features_v1.parquet` tables and corresponding `FeatureView`s (`*_features_fv_v1`) that expose velocity, balance, and cross-entity consistency features.
-  - Introduced an on-demand `RequestSource` and `OnDemandFeatureView` (`transaction_request_features`) for request-time transforms (log-amount, time-of-day sin/cos, weekend/night flags, type codes).
-  - Defined risk-scoring `FeatureService`s (`risk_scoring_v1`, `risk_scoring_v2`) bundling multi-entity features, realtime push-based features, and on-demand transforms.
-  - Added a feature catalog export script that introspects the Feast repo and writes `docs/feature_catalog.md`.
-  - Added lightweight tests ensuring feature tables (if present) expose at least 50 engineered feature columns and that the Feast repo modules (including on-demand views) import correctly.
+  - **Fixed target leakage**: entity feature tables are now point-in-time
+    correct — one row per (entity, event_timestamp) aggregating only
+    strictly-prior transactions; fraud-label features additionally respect a
+    72h label maturation delay (D005).
+  - **Fixed sampling bias**: ingestion now samples uniformly across the full
+    ~31-day simulated window (the old chunked logic silently kept only the
+    first 13 hours) and anchors timestamps to end near "now" so online-store
+    TTLs and materialization behave like live traffic (D008).
+  - **Real training pipeline** (`pipelines/train_model.py`): training data
+    assembled via Feast `get_historical_features` against the
+    `fraud_detection_v2` feature service; temporal 80/20 split;
+    HistGradientBoostingClassifier; artifact bundle + metrics + model card
+    committed under `models/` (D007). Post-transaction balance fields are
+    excluded from features (D006).
+  - **Feast repo v2**: `*_profile_v2` views over the point-in-time sources;
+    leaky v1 views removed; `customer_realtime_v1` now has a valid batch
+    source carrying historical `last_txn_*` columns, so the PushSource path
+    and training read the same feature definitions.
+  - **Serving wired end-to-end**: `/api/predict` now derives entity keys,
+    fetches online features, scores with the trained model, and returns a
+    latency breakdown (feature fetch vs. inference); degrades gracefully to
+    request-time features if the online store is down. Added
+    `/api/model/info` and Prometheus metrics for score distribution and
+    per-stage latency.
+  - **Tests**: leakage regression suite for the point-in-time builder,
+    training smoke tests, mocked serving-path tests (28 passing).
+  - Shared encodings (transaction type codes, entity-id hashing) centralized
+    in `pipelines/encoders.py` and reused by ingest, training, streaming, and
+    serving.
 - **Files touched (high level)**:
-  - `pipelines/feature_engineering.py`
-  - `feature_repo/data_sources.py`
-  - `feature_repo/feature_views.py`
-  - `feature_repo/on_demand_feature_views.py`
-  - `feature_repo/feature_services.py`
-  - `scripts/export_feature_catalog.py`
-  - `docs/feature_catalog.md`
-  - `tests/test_feature_engineering_schema.py`
-  - `tests/test_feature_repo_imports.py`
-  - `README.md`
+  - `pipelines/encoders.py` (new)
+  - `pipelines/data_ingest.py`
+  - `pipelines/build_entity_tables.py` (rewritten)
+  - `pipelines/train_model.py` (new)
+  - `feature_repo/feature_views.py`, `feature_repo/feature_services.py`, `feature_repo/__init__.py`
+  - `services/api/app/main.py` (rewritten predict path)
+  - `services/streaming/kafka_consumer.py`
+  - `scripts/feast_materialize.sh`
+  - `models/` (new: artifact, metrics, model card)
+  - `tests/test_point_in_time.py`, `tests/test_train_model.py`, `tests/test_api_predict.py` (new)
 - **Decisions referenced/added**:
-  - D004 – Entity and timestamp mapping for Feast.
-  - D005 – Window definitions and label-leakage-safe feature engineering.
+  - D005 – Point-in-time entity features with label maturation delay.
+  - D006 – Exclude post-transaction balance fields from model features.
+  - D007 – Committed model artifact bundle with feature contract.
+  - D008 – Uniform time sampling and recent-anchored timestamps.
 
 ---
 

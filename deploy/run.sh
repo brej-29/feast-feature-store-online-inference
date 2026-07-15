@@ -7,9 +7,27 @@ log() {
 
 export PORT="${PORT:-7860}"
 export API_BASE_URL="${API_BASE_URL:-http://127.0.0.1:8000}"
+export FEAST_REPO_PATH="${FEAST_REPO_PATH:-feature_repo}"
 
 log "Using PORT=${PORT}"
 log "Using API_BASE_URL=${API_BASE_URL}"
+
+# Apply Feast definitions and materialize the online store on boot. A fresh
+# container has no local registry (feature_repo/data/registry.db is not
+# committed), so this must run every start; both are idempotent. Skipped
+# gracefully if no Postgres is configured (e.g. first boot before Neon is
+# wired up) so the container still comes up in degraded serving mode.
+if [ -n "${POSTGRES_HOST:-}" ]; then
+  log "POSTGRES_HOST set; applying Feast definitions..."
+  if bash /app/scripts/feast_apply.sh; then
+    log "Feast apply succeeded; materializing online store..."
+    bash /app/scripts/feast_materialize.sh || log "WARNING: materialize failed; online store may be stale or empty."
+  else
+    log "WARNING: feast apply failed; /api/predict will run in degraded mode."
+  fi
+else
+  log "POSTGRES_HOST not set; skipping Feast apply/materialize (degraded serving mode)."
+fi
 
 # Prepare Nginx config (template uses $PORT)
 if [ -f /app/deploy/nginx/nginx.conf ]; then

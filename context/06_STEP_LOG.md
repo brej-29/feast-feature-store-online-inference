@@ -12,6 +12,45 @@ Use reverse chronological order (newest at the top).
 
 ---
 
+## Step 7 – Phase 3: CI fixes, Neon wiring, and a bespoke explanatory UI
+
+- **Date**: 2026-07-15
+- **Agent**: Claude Code (with human review)
+- **Context used**:
+  - context/07_DECISIONS.md (D011, D012)
+- **Summary**:
+  - **CI green**: fixed ruff F401, the Evidently drift-report import crash
+    (import lazily + never fatal), and bumped actions past the Node20
+    deprecation.
+  - **Neon online store wired** (`pipelines/pg_config.py`): parse
+    `POSTGRES_URL` into the discrete vars Feast needs, drive `sslmode` from it,
+    and strip Neon's `-pooler` host (its PgBouncer rejects Feast's
+    `search_path` startup param). Verified apply + seed + online read against
+    the real Neon DB. Boot seeds a bounded subset (`seed_demo_online.py`)
+    instead of a full materialize to stay within free-tier limits.
+  - **Bespoke UI** (`frontend/`, served by FastAPI) replaces Gradio (D012):
+    animated architecture diagram, a live prediction playground that shows
+    per-feature store-vs-default provenance and the retrieval/inference
+    latency split, a streaming demo (push a live event, re-score), and an
+    honest model card. New demo endpoints `/api/demo/entities` and
+    `/api/demo/simulate`; `/api/predict` now returns feature provenance.
+    Gradio and its deps removed; the container is lighter.
+  - Caught a real API key pasted into the tracked `.env.example`; kept it out
+    of git.
+- **Files touched (high level)**:
+  - `.github/workflows/*.yml`, `monitoring/drift_report.py`
+  - `pipelines/pg_config.py` (new), `scripts/seed_demo_online.py` (new),
+    `feature_repo/feature_store.yaml`, `scripts/feast_apply.sh`,
+    `scripts/feast_materialize.sh`, `deploy/run.sh`
+  - `frontend/` (new), `services/api/app/main.py`, `deploy/nginx/nginx.conf`,
+    `requirements.txt`, `Makefile`, `app.py` (removed)
+  - `tests/test_pg_config.py` (new), `tests/test_api_predict.py`
+- **Decisions referenced/added**:
+  - D011 – Deploy to Render instead of HF Spaces.
+  - D012 – Bespoke static UI (replaces Gradio), served by FastAPI.
+
+---
+
 ## Step 6 – Phase 3 (start): deployment prep, pivot from HF Spaces to Render
 
 - **Date**: 2026-07-12

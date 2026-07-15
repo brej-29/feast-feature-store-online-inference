@@ -36,6 +36,11 @@ PUSH_EVENT_LAG_SECONDS = Histogram(
 def get_feature_store() -> FeatureStore:
     global _FEATURE_STORE
     if _FEATURE_STORE is None:
+        # Resolve POSTGRES_URL -> discrete POSTGRES_* (incl. sslmode) before
+        # building the store, matching the API and Feast CLI paths.
+        from pipelines.pg_config import apply_postgres_url_env
+
+        apply_postgres_url_env()
         repo_path = os.getenv("FEAST_REPO_PATH", "feature_repo")
         logger.info("Initializing FeatureStore", extra={"repo_path": repo_path})
         _FEATURE_STORE = FeatureStore(repo_path=repo_path)

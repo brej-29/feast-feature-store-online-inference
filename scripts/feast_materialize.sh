@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Resolve Postgres settings (parses POSTGRES_URL when set; ensures
+# POSTGRES_SSLMODE is populated for feature_store.yaml) so the Feast CLI
+# sees the same connection as the app.
+eval "$(python -m pipelines.pg_config --export)"
+
 END_TS_UTC=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # Materialize all v2 views, including customer_realtime_v1: its batch source

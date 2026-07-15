@@ -10,5 +10,9 @@ online_store:
   db_schema: public
   user: ${POSTGRES_USER}
   password: ${POSTGRES_PASSWORD}
-  sslmode: disable
+  # Driven by pipelines/pg_config: 'require' for managed hosts (Neon parses
+  # this from POSTGRES_URL), 'disable' for local docker-compose. The Feast
+  # CLI gets it via `eval $(python -m pipelines.pg_config --export)` in the
+  # feast_apply/feast_materialize scripts; the API sets it in-process.
+  sslmode: ${POSTGRES_SSLMODE}
   vector_enabled: false

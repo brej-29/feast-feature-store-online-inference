@@ -15,6 +15,12 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 from pydantic import BaseModel
 
 from pipelines.encoders import deterministic_hash, map_type_to_code
+from pipelines.pg_config import apply_postgres_url_env
+
+# Resolve POSTGRES_URL -> discrete POSTGRES_* env vars (incl. sslmode) before
+# any FeatureStore is constructed, so feature_store.yaml substitution sees the
+# managed-DB connection rather than a stale local default.
+apply_postgres_url_env()
 
 logger = logging.getLogger("feast_fraud.api")
 

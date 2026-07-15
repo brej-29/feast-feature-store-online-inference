@@ -23,10 +23,17 @@ services:
         value: models/fraud_model_v2.joblib
       - key: API_BASE_URL
         value: http://127.0.0.1:8000
-      # Neon Postgres connection (Neon dashboard -> your project -> Connect).
-      # Leave POSTGRES_HOST unset to deploy first and wire Neon up later --
-      # the container degrades gracefully (serves from request-time features
-      # only) rather than failing to boot.
+      # Neon Postgres online store. EASIEST: paste your Neon connection string
+      # (Neon dashboard -> your project -> Connect) as POSTGRES_URL -- it
+      # bundles host/db/user/password/sslmode and takes precedence over the
+      # discrete vars below (see pipelines/pg_config.py). Leave it unset to
+      # deploy first and wire Neon up later -- the container degrades
+      # gracefully (serves from request-time features only) rather than
+      # failing to boot.
+      - key: POSTGRES_URL
+        sync: false
+      # Discrete alternative to POSTGRES_URL (used only if POSTGRES_URL is
+      # empty). Ignored when POSTGRES_URL is set.
       - key: POSTGRES_HOST
         sync: false
       - key: POSTGRES_PORT

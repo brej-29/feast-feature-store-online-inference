@@ -71,8 +71,5 @@ demo:
 	else \
 		echo "==> models/fraud_model_v2.joblib exists, skipping training."; \
 	fi
-	@echo "==> Starting FastAPI on :8000 and Gradio UI on :7861 (Ctrl+C to stop both)..."
-	@trap 'kill 0' EXIT; \
-	. .venv/bin/activate && uvicorn services.api.app.main:app --host 0.0.0.0 --port 8000 & \
-	. .venv/bin/activate && python app.py; \
-	wait
+	@echo "==> Starting app on http://localhost:8000 (UI at /, API at /api/) ..."
+	. .venv/bin/activate && uvicorn services.api.app.main:app --host 0.0.0.0 --port 8000

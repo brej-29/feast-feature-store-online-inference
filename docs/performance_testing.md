@@ -20,7 +20,7 @@ pip install locust
 
 ### 1.2. Running Locust
 
-1. Start the stack (FastAPI + Gradio + Nginx) locally, for example via Docker:
+1. Start the stack (FastAPI + Nginx) locally, for example via Docker:
 
    ```bash
    docker compose up --build

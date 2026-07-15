@@ -156,3 +156,39 @@ def test_predict_allows_correct_api_key(model_bundle, monkeypatch):
         "/api/predict", json=PAYLOAD, headers={"X-API-Key": "secret123"}
     )
     assert response.status_code == 200
+
+
+def test_predict_exposes_retrieved_features(model_bundle, monkeypatch):
+    monkeypatch.setattr(api_main, "get_feature_store", lambda: object())
+    monkeypatch.setattr(
+        api_main,
+        "_fetch_online_features",
+        lambda store, bundle, row: {"customer_profile_v2__txn_count_prior": 3.0},
+    )
+    body = client.post("/api/predict", json=PAYLOAD).json()
+    rf = body["debug_info"]["retrieved_features"]
+    assert rf["customer_profile_v2__txn_count_prior"]["from_store"] is True
+    assert rf["customer_profile_v2__txn_count_prior"]["value"] == 3.0
+    # a feature not returned by the store is marked as not-from-store
+    assert rf["customer_profile_v2__fraud_rate_prior"]["from_store"] is False
+    assert "amount" in body["debug_info"]["request_features"]
+
+
+def test_demo_entities_has_scenarios_and_cold_start():
+    body = client.get("/api/demo/entities").json()
+    scenarios = body["scenarios"]
+    assert len(scenarios) >= 1
+    # every scenario carries what the form needs
+    for s in scenarios:
+        assert {"customer_id", "merchant_id", "amount", "type"} <= set(s)
+    # the deliberate cold-start example is always present
+    assert any(s["id"] == "cold-start" for s in scenarios)
+
+
+def test_demo_simulate_degrades_without_store(model_bundle, monkeypatch):
+    monkeypatch.setattr(
+        api_main, "get_feature_store", lambda: (_ for _ in ()).throw(RuntimeError("no store"))
+    )
+    body = client.post("/api/demo/simulate", json=PAYLOAD).json()
+    assert body["degraded"] is True
+    assert "online store" in body["message"].lower()

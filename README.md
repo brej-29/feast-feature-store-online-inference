@@ -6,7 +6,7 @@ Step 0–2 scaffold for a free-tier friendly, production-grade feature store sta
 - **Postgres** for online feature storage
 - **Kafka/Redpanda** for streaming events and real-time feature updates
 - **FastAPI** backend exposing prediction, health/metrics, and basic Feast endpoints
-- **Gradio** UI deployed on **Hugging Face Spaces**
+- Bespoke static **UI** served by FastAPI, deployed on **Hugging Face Spaces**
 - **Prometheus** metrics and **Nginx** reverse proxy inside the single app container
 
 This repository is intentionally minimal but _runnable_ so that future steps (feature engineering, richer features, training, etc.) stay grounded and consistent.
@@ -38,7 +38,7 @@ A **context system** under `./context/` that documents:
   - `POST /api/features/online` → debug endpoint for fetching online features
   - `POST /api/push` → push realtime customer events into Feast `PushSource`
 
-- **Gradio app** (`app.py`) that:
+- **Frontend UI** (`frontend/`) served by FastAPI via `StaticFiles` at `/`, that:
   - Renders a fraud prediction form (amount, type, origin/destination accounts)
   - Maps raw inputs into entity IDs consistent with the offline pipeline
   - Calls the `/api/predict` endpoint and displays prediction + latency details
@@ -47,13 +47,12 @@ A **context system** under `./context/` that documents:
 - **Prometheus config** (`monitoring/prometheus.yml`) to scrape FastAPI `/metrics`.
 
 - **Nginx reverse proxy** (`deploy/nginx/nginx.conf`) that routes:
-  - `/` → Gradio UI
+  - `/` → FastAPI (UI + API)
   - `/api/*` → FastAPI
   - `/prom/*` → Prometheus UI
 
 - A **single launcher script** (`deploy/run.sh`) that starts:
-  - FastAPI
-  - Gradio
+  - FastAPI (serving both the UI and the API)
   - Prometheus
   - Nginx (as the foreground process)
 
@@ -203,17 +202,13 @@ Run the FastAPI backend:
 uvicorn services.api.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Run the Gradio frontend in another terminal:
-
-```bash
-python app.py
-```
+The bespoke frontend is served by FastAPI itself (via `StaticFiles` from `frontend/`), so no separate frontend process is needed.
 
 You should be able to hit:
 
 - FastAPI health: http://127.0.0.1:8000/health
 - FastAPI metrics: http://127.0.0.1:8000/metrics
-- Gradio UI: http://127.0.0.1:7861/
+- UI: http://127.0.0.1:8000/
 
 ### 2.2. Local Docker stack
 
@@ -221,7 +216,7 @@ For local experiments (not HF Spaces), use Docker Compose to run:
 
 - Postgres (for future Feast online store)
 - Redpanda (Kafka-compatible broker)
-- Stack container (FastAPI + Gradio + Prometheus + Nginx)
+- Stack container (FastAPI + Prometheus + Nginx)
 
 ```bash
 docker compose up --build
@@ -229,7 +224,7 @@ docker compose up --build
 
 The stack container exposes Nginx on port `7860` by default, routing:
 
-- `http://localhost:7860/` → Gradio UI
+- `http://localhost:7860/` → FastAPI (UI)
 - `http://localhost:7860/api/` → FastAPI
 - `http://localhost:7860/prom/` → Prometheus UI
 
@@ -251,14 +246,13 @@ For HF Spaces (Docker):
   - Copies the repo into `/app`
   - Uses `deploy/run.sh` as the container entrypoint
 - HF Spaces provides a `$PORT` environment variable. Nginx listens on `$PORT` and proxies to:
-  - Gradio on `7861`
-  - FastAPI on `8000`
+  - FastAPI (UI + API) on `8000`
   - Prometheus on `9090`
 
 When deployed on HF Spaces:
 
-- The **user-facing endpoint** will be the Nginx port (`$PORT`), not the raw Gradio/FastAPI ports.
-- Gradio should be accessed at `https://&lt;space-url&gt;/`
+- The **user-facing endpoint** will be the Nginx port (`$PORT`), not the raw FastAPI port.
+- The UI should be accessed at `https://&lt;space-url&gt;/`
 - API at `https://&lt;space-url&gt;/api/predict`
 - Prometheus UI at `https://&lt;space-url&gt;/prom/`
 

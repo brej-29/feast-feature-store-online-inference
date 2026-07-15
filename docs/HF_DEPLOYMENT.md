@@ -9,7 +9,7 @@
 This repository is designed to run as a **single Docker container** on
 Hugging Face Spaces, exposing:
 
-- Gradio UI
+- Bespoke static UI (served by FastAPI)
 - FastAPI API
 - Prometheus UI
 - Nginx as the public entrypoint
@@ -36,9 +36,9 @@ You should not need to modify the Dockerfile for a basic deployment.
 At minimum, configure:
 
 - `PORT` – provided automatically by HF Spaces; Nginx listens on this port.
-- `API_BASE_URL` – base URL used by the Gradio app to call the API:
+- `API_BASE_URL` – base URL used by the frontend UI to call the API:
   - For HF Spaces, the default (`http://127.0.0.1:8000`) works because the
-    Gradio code runs inside the same container as FastAPI.
+    UI is served by the same FastAPI process inside the container.
   - For more explicit routing through Nginx you could set:
     - `API_BASE_URL=http://127.0.0.1:${PORT}`
 
@@ -60,7 +60,7 @@ Optional Kafka / streaming configuration (local-only, not typically used in HF):
 
 Once the Space is running:
 
-- Gradio UI: `https://<space-host>/`
+- UI: `https://<space-host>/`
 - Prediction API: `https://<space-host>/api/predict`
 - Feast health: `https://<space-host>/api/feast/health`
 - Prometheus UI: `https://<space-host>/prom/`
@@ -86,5 +86,5 @@ Typical workflow:
 
 Out of the box, this repo focuses on:
 - Wiring the container and Nginx correctly for HF Spaces.
-- Providing a working Gradio → FastAPI → Feast scaffold that can be extended
+- Providing a working frontend → FastAPI → Feast scaffold that can be extended
   as you add real data, models, and infrastructure.

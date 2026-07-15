@@ -1,7 +1,7 @@
 # Render.com Deployment Guide
 
-Genuinely free hosting for the single-container stack (Nginx + FastAPI +
-Gradio + Prometheus, same image as `Dockerfile` describes) -- no credit
+Genuinely free hosting for the single-container stack (Nginx + FastAPI
+(serving the UI and API) + Prometheus, same image as `Dockerfile` describes) -- no credit
 card required for Render's free web service plan. See D011 for why this
 replaced the original Hugging Face Spaces plan.
 
@@ -37,7 +37,7 @@ free-tier trade-off, not a bug).
 
 Render gives you a URL like `https://feast-fraud-detection.onrender.com`:
 
-- Gradio UI: `https://feast-fraud-detection.onrender.com/`
+- UI: `https://feast-fraud-detection.onrender.com/`
 - Prediction API: `https://feast-fraud-detection.onrender.com/api/predict`
 - Feast health: `https://feast-fraud-detection.onrender.com/api/feast/health`
 - Prometheus UI: `https://feast-fraud-detection.onrender.com/prom/`

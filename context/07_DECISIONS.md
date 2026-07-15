@@ -407,3 +407,43 @@ Each decision should have:
   - README/demo copy should mention the cold-start honestly rather than
     hide it -- consistent with the project's "state limitations plainly"
     approach elsewhere (model card, D006).
+
+---
+
+## D012 – Bespoke static UI (replaces Gradio), served by FastAPI
+
+- **Date**: 2026-07-15
+- **Status**: accepted
+- **Context**:
+  - The Gradio "stub" UI was too simple for a portfolio and didn't explain
+    what the system does. Options were: enhance Gradio, switch to Streamlit,
+    or build a bespoke frontend.
+- **Options considered**:
+  - **Gradio / Streamlit** – fast to build but templated-looking; every ML
+    portfolio has them, limited layout control for an explanatory dashboard,
+    and each runs as a second Python process (extra memory on a 512 MB
+    free-tier box, plus websocket proxying for Streamlit behind Nginx).
+  - **Bespoke single-page app** (vanilla HTML/CSS/JS, no build) served by
+    FastAPI via `StaticFiles` – full design control for a teaching-oriented
+    UI, shows full-stack capability, and is *lighter*: it removes the Gradio
+    process and the `gradio`/`huggingface_hub` dependencies, and Nginx simply
+    proxies `/` and `/api/` to one FastAPI process.
+- **Decision**:
+  - Build the bespoke UI under `frontend/` (dark data-infra aesthetic, Fira
+    Sans/Code; design direction from the ui-ux-pro-max skill). FastAPI serves
+    it at `/` (mount added after all routes so `/api/*` wins). Gradio, its
+    deps, and `app.py` are removed; `deploy/run.sh` and `deploy/nginx/nginx.conf`
+    updated to drop the 7861 Gradio process.
+  - Added demo endpoints powering the UI: `GET /api/demo/entities` (preset
+    transactions built from the committed entity tables) and
+    `POST /api/demo/simulate` (push a live event via the Feast PushSource,
+    re-score, and return before/after so the streaming freshness is visible).
+    `/api/predict` now returns per-feature provenance (which values came from
+    the online store vs. training defaults) so the UI can show the backend.
+- **Consequences / Follow-ups**:
+  - A public "try it live" demo conflicts with `API_KEY` protection (a client
+    can't safely hold a secret). For the public demo, leave `API_KEY` unset on
+    the deployed server; keep it only if the demo should be private. The UI
+    surfaces a clear message on 401.
+  - Reveal-on-scroll uses position checks + a failsafe timeout (not solely
+    IntersectionObserver) so content can never remain hidden.

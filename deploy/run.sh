@@ -58,11 +58,6 @@ log "Starting FastAPI on 0.0.0.0:8000..."
 uvicorn services.api.app.main:app --host 0.0.0.0 --port 8000 &
 FASTAPI_PID=$!
 
-# Start Gradio (frontend)
-log "Starting Gradio on 0.0.0.0:7861..."
-python app.py --port 7861 &
-GRADIO_PID=$!
-
 # Start Prometheus (if available in PATH)
 if command -v prometheus >/dev/null 2>&1; then
   log "Starting Prometheus on 0.0.0.0:9090..."
@@ -80,9 +75,6 @@ terminate() {
   log "Received termination signal, stopping child processes..."
   if ps -p "${FASTAPI_PID}" >/dev/null 2>&1; then
     kill "${FASTAPI_PID}" || true
-  fi
-  if ps -p "${GRADIO_PID}" >/dev/null 2>&1; then
-    kill "${GRADIO_PID}" || true
   fi
   if [ -n "${PROMETHEUS_PID}" ] && ps -p "${PROMETHEUS_PID}" >/dev/null 2>&1; then
     kill "${PROMETHEUS_PID}" || true

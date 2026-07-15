@@ -1,6 +1,7 @@
 import contextvars
 import logging
 import os
+import random
 import time
 import uuid
 from datetime import datetime, timezone
@@ -10,6 +11,7 @@ import joblib
 import pandas as pd
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from feast import FeatureStore
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel
@@ -242,6 +244,74 @@ def _fetch_online_features(
     }
 
 
+def _score_transaction(
+    bundle: Dict[str, Any],
+    entity_row: Dict[str, str],
+    request_features: Dict[str, float],
+) -> Dict[str, Any]:
+    """Core scoring path shared by /api/predict and the streaming demo.
+
+    Fetches online features, assembles the feature vector in training order
+    (request features override, missing online features fall back to training
+    defaults), and runs inference. Returns the score plus enough detail for
+    the UI to show exactly what the feature store returned.
+    """
+    degraded = False
+    online_features: Dict[str, Optional[float]] = {}
+    fetch_start = time.perf_counter()
+    try:
+        store = get_feature_store()
+        online_features = _fetch_online_features(store, bundle, entity_row)
+    except Exception:  # noqa: BLE001
+        logger.exception("online_feature_fetch_failed", extra={"entity_row": entity_row})
+        degraded = True
+        DEGRADED_PREDICTIONS.inc()
+    feature_fetch_s = time.perf_counter() - fetch_start
+    FEATURE_FETCH_LATENCY.observe(feature_fetch_s)
+
+    defaults = bundle["feature_defaults"]
+    missing: List[str] = []
+    row: Dict[str, float] = {}
+    for name in bundle["feature_names"]:
+        if name in request_features:
+            row[name] = request_features[name]
+        else:
+            value = online_features.get(name)
+            if value is None:
+                missing.append(name)
+                value = defaults.get(name, 0.0)
+            row[name] = float(value)
+
+    inference_start = time.perf_counter()
+    features_frame = pd.DataFrame([row], columns=bundle["feature_names"])
+    fraud_probability = float(bundle["model"].predict_proba(features_frame)[0, 1])
+    inference_s = time.perf_counter() - inference_start
+    INFERENCE_LATENCY.observe(inference_s)
+    PREDICTION_SCORE.observe(fraud_probability)
+
+    # Per-feature provenance so the UI can show which values came from the
+    # online store vs. fell back to training defaults.
+    retrieved = {
+        name: {
+            "value": online_features.get(name),
+            "from_store": online_features.get(name) is not None,
+        }
+        for name in bundle["feast_feature_names"]
+    }
+    threshold = float(bundle["threshold"])
+    return {
+        "fraud_probability": fraud_probability,
+        "is_fraud": fraud_probability >= threshold,
+        "threshold": threshold,
+        "feature_fetch_ms": feature_fetch_s * 1000.0,
+        "inference_ms": inference_s * 1000.0,
+        "degraded": degraded,
+        "missing": missing,
+        "retrieved_features": retrieved,
+        "request_features": request_features,
+    }
+
+
 @app.middleware("http")
 async def metrics_middleware(request: Request, call_next):
     """
@@ -352,67 +422,36 @@ async def predict(payload: PredictInput) -> PredictOutput:
 
     entity_row = _derive_entity_ids(payload.entity_ids)
     request_features = _build_request_features(payload.request)
+    scored = _score_transaction(bundle, entity_row, request_features)
 
-    degraded = False
-    online_features: Dict[str, Optional[float]] = {}
-    fetch_start = time.perf_counter()
-    try:
-        store = get_feature_store()
-        online_features = _fetch_online_features(store, bundle, entity_row)
-    except Exception:  # noqa: BLE001
-        logger.exception("online_feature_fetch_failed", extra={"entity_row": entity_row})
-        degraded = True
-        DEGRADED_PREDICTIONS.inc()
-    feature_fetch_s = time.perf_counter() - fetch_start
-    FEATURE_FETCH_LATENCY.observe(feature_fetch_s)
-
-    defaults = bundle["feature_defaults"]
-    missing: List[str] = []
-    row: Dict[str, float] = {}
-    for name in bundle["feature_names"]:
-        if name in request_features:
-            row[name] = request_features[name]
-        else:
-            value = online_features.get(name)
-            if value is None:
-                missing.append(name)
-                value = defaults.get(name, 0.0)
-            row[name] = float(value)
-
-    inference_start = time.perf_counter()
-    features_frame = pd.DataFrame([row], columns=bundle["feature_names"])
-    fraud_probability = float(bundle["model"].predict_proba(features_frame)[0, 1])
-    inference_s = time.perf_counter() - inference_start
-    INFERENCE_LATENCY.observe(inference_s)
-    PREDICTION_SCORE.observe(fraud_probability)
-
-    threshold = float(bundle["threshold"])
     latency_ms = (time.perf_counter() - start) * 1000.0
 
     logger.info(
         "prediction_served",
         extra={
-            "fraud_probability": round(fraud_probability, 6),
+            "fraud_probability": round(scored["fraud_probability"], 6),
             "model_version": bundle["model_version"],
-            "degraded": degraded,
-            "missing_features": len(missing),
+            "degraded": scored["degraded"],
+            "missing_features": len(scored["missing"]),
             "latency_ms": round(latency_ms, 2),
         },
     )
 
     return PredictOutput(
-        fraud_probability=fraud_probability,
-        is_fraud=fraud_probability >= threshold,
-        threshold=threshold,
+        fraud_probability=scored["fraud_probability"],
+        is_fraud=scored["is_fraud"],
+        threshold=scored["threshold"],
         model_version=bundle["model_version"],
         latency_ms=latency_ms,
-        feature_fetch_ms=feature_fetch_s * 1000.0,
-        inference_ms=inference_s * 1000.0,
+        feature_fetch_ms=scored["feature_fetch_ms"],
+        inference_ms=scored["inference_ms"],
         debug_info={
-            "degraded": degraded,
+            "degraded": scored["degraded"],
             "entity_ids": entity_row,
-            "missing_feature_count": len(missing),
-            "missing_features": missing[:20],
+            "missing_feature_count": len(scored["missing"]),
+            "missing_features": scored["missing"][:20],
+            "retrieved_features": scored["retrieved_features"],
+            "request_features": scored["request_features"],
         },
     )
 
@@ -485,3 +524,181 @@ async def get_online_features(body: OnlineFeaturesRequest) -> Dict[str, Any]:
             status_code=500,
             detail="Failed to fetch online features; ensure Feast has been applied and materialized.",
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Demo endpoints powering the web UI (entity presets + live streaming demo).
+# ---------------------------------------------------------------------------
+
+_DEMO_SCENARIOS_CACHE: Optional[List[Dict[str, Any]]] = None
+DATA_DIR = os.getenv("DATA_DIR", "data/processed")
+
+TYPE_ROTATION = ["TRANSFER", "CASH_OUT", "PAYMENT", "TRANSFER", "CASH_OUT", "PAYMENT"]
+
+
+def _build_demo_scenarios() -> List[Dict[str, Any]]:
+    """Curated, ready-to-score transactions built from the committed entity
+    tables, so the UI dropdown offers real entities that have features in the
+    store (plus one deliberate cold-start example)."""
+    global _DEMO_SCENARIOS_CACHE
+    if _DEMO_SCENARIOS_CACHE is not None:
+        return _DEMO_SCENARIOS_CACHE
+
+    scenarios: List[Dict[str, Any]] = []
+    try:
+        merchants = pd.read_parquet(os.path.join(DATA_DIR, "merchant_features.parquet"))
+        customers = pd.read_parquet(os.path.join(DATA_DIR, "customer_features.parquet"))
+        m_latest = (
+            merchants.sort_values("event_timestamp").groupby("merchant_id").tail(1)
+        )
+        top_m = m_latest.nlargest(6, "txn_count_prior")
+        cust_ids = customers["customer_id"].drop_duplicates().head(60).tolist()
+
+        for i, (_, mr) in enumerate(top_m.iterrows()):
+            prior = int(mr["txn_count_prior"])
+            avg = float(mr["amount_mean_prior"]) or 5000.0
+            amount = round(avg * (0.6 + 0.5 * (i % 3)), 2)  # vary around the avg
+            # Alternate the origin balance so amount/balance risk ratio varies.
+            old_org = round(amount * (1.2 if i % 2 == 0 else 0.05), 2)
+            scenarios.append(
+                {
+                    "id": f"seeded-{i + 1}",
+                    "label": f"Merchant seen {prior}x in store · ${avg:,.0f} avg",
+                    "customer_id": cust_ids[i % len(cust_ids)] if cust_ids else f"C{i}",
+                    "merchant_id": str(mr["merchant_id"]),
+                    "amount": amount,
+                    "type": TYPE_ROTATION[i % len(TYPE_ROTATION)],
+                    "oldbalanceOrg": old_org,
+                    "oldbalanceDest": 0.0,
+                    "seeded": True,
+                    "note": (
+                        f"This merchant has {prior} prior transactions in the "
+                        f"online store (avg ${avg:,.0f})."
+                    ),
+                }
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("demo_scenarios_build_failed")
+
+    scenarios.append(
+        {
+            "id": "cold-start",
+            "label": "Brand-new customer & merchant (cold start)",
+            "customer_id": "C_NEW_" + deterministic_hash("demo-cold-customer")[:8],
+            "merchant_id": "M_NEW_" + deterministic_hash("demo-cold-merchant")[:8],
+            "amount": 8500.0,
+            "type": "TRANSFER",
+            "oldbalanceOrg": 900.0,
+            "oldbalanceDest": 0.0,
+            "seeded": False,
+            "note": (
+                "No history in the store — the model falls back to request-time "
+                "features and training defaults. Watch the 'from store' flags."
+            ),
+        }
+    )
+
+    _DEMO_SCENARIOS_CACHE = scenarios
+    return scenarios
+
+
+@app.get("/api/demo/entities")
+async def demo_entities() -> Dict[str, Any]:
+    """Preset transactions for the UI dropdown."""
+    return {"scenarios": _build_demo_scenarios()}
+
+
+def _realtime_view(scored: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract the customer realtime feature values + score for the UI."""
+    realtime = {
+        name.split("__")[-1]: info["value"]
+        for name, info in scored["retrieved_features"].items()
+        if "realtime" in name
+    }
+    return {
+        "fraud_probability": scored["fraud_probability"],
+        "is_fraud": scored["is_fraud"],
+        "realtime_features": realtime,
+        "latency_ms": scored["feature_fetch_ms"] + scored["inference_ms"],
+    }
+
+
+@app.post("/api/demo/simulate", dependencies=[Depends(require_api_key)])
+async def demo_simulate(payload: PredictInput) -> Dict[str, Any]:
+    """Streaming demo: score, push a live event via Feast PushSource, re-score.
+
+    Shows how a real-time event instantly updates the customer's online
+    features and moves the fraud score -- the core value of an online feature
+    store. Requires the online store (writes); degrades gracefully otherwise.
+    """
+    try:
+        bundle = get_model_bundle()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    entity_row = _derive_entity_ids(payload.entity_ids)
+    request_features = _build_request_features(payload.request)
+
+    before = _score_transaction(bundle, entity_row, request_features)
+    if before["degraded"]:
+        return {
+            "degraded": True,
+            "message": (
+                "The streaming demo needs the online store (Postgres/Neon), "
+                "which is currently unavailable."
+            ),
+            "before": _realtime_view(before),
+        }
+
+    now = datetime.now(timezone.utc)
+    base = float(payload.request.get("amount", 0.0) or 0.0) or 25000.0
+    # Vary the synthetic "live" event each call so repeated clicks show the
+    # realtime features (and re-score) actually move, not sit unchanged.
+    amount = round(base * random.uniform(0.5, 2.5), 2)
+    event = {
+        "event_timestamp": now,
+        "customer_id": entity_row["customer_id"],
+        "last_txn_amount": amount,
+        "last_txn_type_code": int(random.choice([2, 3, 1])),  # TRANSFER/CASH_OUT/PAYMENT
+        "last_txn_hour": now.hour,
+        "last_txn_is_flagged": int(random.random() < 0.5),
+    }
+    try:
+        from services.streaming.feast_push import push_customer_realtime
+
+        push_customer_realtime(pd.DataFrame([event]))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("demo_simulate_push_failed")
+        raise HTTPException(status_code=502, detail=f"Failed to push live event: {exc}") from exc
+
+    after = _score_transaction(bundle, entity_row, request_features)
+    return {
+        "degraded": False,
+        "event": {
+            "customer_id": event["customer_id"],
+            "last_txn_amount": event["last_txn_amount"],
+            "last_txn_type_code": event["last_txn_type_code"],
+            "last_txn_hour": event["last_txn_hour"],
+            "last_txn_is_flagged": event["last_txn_is_flagged"],
+            "pushed_at": now.isoformat(),
+        },
+        "before": _realtime_view(before),
+        "after": _realtime_view(after),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Static frontend. Mounted LAST so all /api and /metrics routes win; serves
+# the bespoke single-page UI at / (and its assets). In the container Nginx
+# proxies / here; locally `uvicorn` serves the UI directly.
+# ---------------------------------------------------------------------------
+
+_FRONTEND_DIR = os.getenv(
+    "FRONTEND_DIR",
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "frontend")),
+)
+if os.path.isdir(_FRONTEND_DIR):
+    app.mount("/", StaticFiles(directory=_FRONTEND_DIR, html=True), name="frontend")
+    logger.info("Serving frontend", extra={"dir": _FRONTEND_DIR})
+else:
+    logger.warning("Frontend directory not found; UI will not be served", extra={"dir": _FRONTEND_DIR})

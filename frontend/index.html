@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fraud Feature Store — real-time scoring on Feast</title>
+  <meta name="description" content="Real-time payment fraud scoring on a Feast online feature store: sub-100ms feature retrieval from Postgres, gradient-boosted scoring, and live streaming feature updates." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%2322c55e' d='M12 2l8 4v6c0 5-3.4 8.5-8 10-4.6-1.5-8-5-8-10V6l8-4z'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+  <!-- ===== Top bar ===== -->
+  <div class="topbar">
+    <div class="wrap">
+      <div class="brand">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 2l8 4v6c0 5-3.4 8.5-8 10-4.6-1.5-8-5-8-10V6l8-4z" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1.5"/>
+          <path d="M8.5 12.2l2.3 2.3 4.7-4.9" stroke="#22c55e" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span>Fraud Feature Store</span>
+        <span class="sub">· real-time scoring on Feast</span>
+      </div>
+      <div class="spacer"></div>
+      <div class="statuses" id="statuses"></div>
+      <a class="ghlink" href="https://github.com/brej-29/feast-feature-store-online-inference" target="_blank" rel="noopener">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.9 10.9c.6.1.8-.2.8-.5v-1.7c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17 4.7 18 5 18 5c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.6.8.5A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5z"/></svg>
+        <span class="txt-full">GitHub</span>
+      </a>
+    </div>
+  </div>
+
+  <!-- ===== Hero ===== -->
+  <header class="hero">
+    <div class="wrap">
+      <div class="eyebrow">Feast · online feature store · fraud detection</div>
+      <h1>Fraud decisions in&nbsp;<span class="grad">milliseconds</span>.</h1>
+      <p class="lede">When a payment arrives, this service looks up the customer's recent behaviour from a low-latency <b>online feature store</b>, combines it with the transaction itself, and scores it with a gradient-boosted model — single-digit-millisecond inference, plus one database round-trip. The live demo shows you exactly where the time goes.</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="#playground">
+          Try a live prediction
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+        </a>
+        <a class="btn btn-ghost" href="#how">How it works</a>
+      </div>
+      <div class="stat-chips" id="heroStats">
+        <div class="stat-chip"><div class="n mono">~8<span class="unit">ms</span></div><div class="l">model inference time</div></div>
+        <div class="stat-chip"><div class="n mono" id="statPrauc">0.93</div><div class="l">PR-AUC (synthetic test set)</div></div>
+        <div class="stat-chip"><div class="n mono">54</div><div class="l">features served per request</div></div>
+        <div class="stat-chip"><div class="n mono" id="statModel">—</div><div class="l">model version</div></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ===== How it works ===== -->
+  <section id="how">
+    <div class="wrap">
+      <div class="eyebrow reveal">The idea</div>
+      <h2 class="section-title reveal">What is an online feature store?</h2>
+      <p class="lede reveal">A model is only as good as the data it sees at decision time. A <b>feature store</b> computes signals about each customer, merchant and device once, stores the freshest values in a fast database, and serves the <em>same</em> definitions to both training and live scoring — so the model never sees inconsistent inputs. Here's the request path:</p>
+
+      <div class="flow reveal" id="flow">
+        <svg viewBox="0 0 920 260" role="img" aria-label="Request flow: a transaction is enriched with features from the online store and scored by the model.">
+          <defs>
+            <marker id="arw" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L6,3 L0,6 Z" fill="#93a3b8"/>
+            </marker>
+            <marker id="arwd" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L6,3 L0,6 Z" fill="#38bdf8"/>
+            </marker>
+          </defs>
+
+          <!-- connectors -->
+          <path class="flowline" d="M170 78 H250" stroke="#93a3b8" stroke-width="1.6" fill="none" marker-end="url(#arw)"/>
+          <path class="flowline" d="M470 78 H556" stroke="#93a3b8" stroke-width="1.6" fill="none" marker-end="url(#arw)"/>
+          <path class="flowline" d="M700 78 H778" stroke="#93a3b8" stroke-width="1.6" fill="none" marker-end="url(#arw)"/>
+          <!-- kafka stream into feature store -->
+          <path class="flowline data" d="M360 208 V126" stroke="#38bdf8" stroke-width="1.6" stroke-dasharray="5 5" fill="none" marker-end="url(#arwd)"/>
+
+          <!-- node: transaction -->
+          <g>
+            <rect x="24" y="46" width="146" height="64" rx="12" fill="#16223a" stroke="rgba(148,163,184,0.28)"/>
+            <text x="97" y="72" text-anchor="middle" fill="#e8eef7" font-family="Fira Sans" font-size="14" font-weight="600">Transaction</text>
+            <text x="97" y="92" text-anchor="middle" fill="#64748b" font-family="Fira Code" font-size="11">amount · type · balances</text>
+          </g>
+
+          <!-- node: feature store (hero) -->
+          <g>
+            <rect x="250" y="34" width="220" height="88" rx="12" fill="rgba(56,189,248,0.08)" stroke="#38bdf8" stroke-width="1.4"/>
+            <text x="360" y="60" text-anchor="middle" fill="#38bdf8" font-family="Fira Sans" font-size="14" font-weight="600">Feast online store</text>
+            <text x="360" y="80" text-anchor="middle" fill="#93a3b8" font-family="Fira Code" font-size="11">Postgres · key-value lookup</text>
+            <text x="360" y="100" text-anchor="middle" fill="#64748b" font-family="Fira Code" font-size="10.5">customer · merchant · device · geo</text>
+          </g>
+
+          <!-- node: model -->
+          <g>
+            <rect x="556" y="46" width="144" height="64" rx="12" fill="#16223a" stroke="rgba(148,163,184,0.28)"/>
+            <text x="628" y="72" text-anchor="middle" fill="#e8eef7" font-family="Fira Sans" font-size="14" font-weight="600">Model</text>
+            <text x="628" y="92" text-anchor="middle" fill="#64748b" font-family="Fira Code" font-size="11">gradient-boosted trees</text>
+          </g>
+
+          <!-- node: score -->
+          <g>
+            <rect x="778" y="46" width="120" height="64" rx="12" fill="rgba(34,197,94,0.08)" stroke="#22c55e" stroke-width="1.4"/>
+            <text x="838" y="72" text-anchor="middle" fill="#22c55e" font-family="Fira Sans" font-size="14" font-weight="600">Fraud score</text>
+            <text x="838" y="92" text-anchor="middle" fill="#64748b" font-family="Fira Code" font-size="11">0.00 – 1.00</text>
+          </g>
+
+          <!-- node: kafka -->
+          <g>
+            <rect x="278" y="208" width="164" height="44" rx="10" fill="#16223a" stroke="rgba(56,189,248,0.4)"/>
+            <text x="360" y="228" text-anchor="middle" fill="#93a3b8" font-family="Fira Sans" font-size="12.5" font-weight="500">Kafka event stream</text>
+            <text x="360" y="244" text-anchor="middle" fill="#64748b" font-family="Fira Code" font-size="10">real-time feature updates</text>
+          </g>
+
+          <text x="513" y="70" text-anchor="middle" fill="#64748b" font-family="Fira Code" font-size="10">features</text>
+        </svg>
+      </div>
+
+      <div class="flow-legend">
+        <div class="item reveal"><h4><span class="tag data">1</span> Look up history</h4><p>The customer, merchant, device and geo-cell keys are fetched from Postgres — counts, amounts, and matured fraud rates, all point-in-time correct.</p></div>
+        <div class="item reveal"><h4><span class="tag data">2</span> Add the request</h4><p>Signals available before the payment executes (amount, type, hour, pre-transaction balances) are combined with the stored features.</p></div>
+        <div class="item reveal"><h4><span class="tag accent">3</span> Score &amp; decide</h4><p>The model returns a fraud probability and a threshold decision, with the retrieval-vs-inference latency measured separately.</p></div>
+        <div class="item reveal"><h4><span class="tag data">4</span> Stay fresh</h4><p>A streaming path pushes each new event back into the store, so the next lookup already reflects what just happened.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Live playground ===== -->
+  <section id="playground">
+    <div class="wrap">
+      <div class="eyebrow reveal">Live</div>
+      <h2 class="section-title reveal">Score a transaction</h2>
+      <p class="lede reveal">Pick a preset (real entities from the dataset that have features in the store) or enter your own, then score it. The result shows the actual values the feature store returned and the latency split between retrieval and inference.</p>
+
+      <div class="grid-play reveal" style="margin-top:30px">
+        <div class="card card-pad">
+          <label class="fld">
+            <span class="lab">Preset transaction</span>
+            <select class="input" id="preset"><option value="">Loading presets…</option></select>
+          </label>
+          <div class="hint" id="presetNote"></div>
+          <div class="row-2">
+            <label class="fld"><span class="lab">Amount</span><input class="input" id="amount" type="number" value="5000" step="0.01" /></label>
+            <label class="fld"><span class="lab">Type</span>
+              <select class="input" id="type"><option>TRANSFER</option><option>CASH_OUT</option><option>PAYMENT</option><option>CASH_IN</option><option>DEBIT</option></select>
+            </label>
+          </div>
+          <div class="row-2">
+            <label class="fld"><span class="lab">Origin balance</span><input class="input" id="oldbalanceOrg" type="number" value="6000" step="0.01" /></label>
+            <label class="fld"><span class="lab">Dest balance</span><input class="input" id="oldbalanceDest" type="number" value="0" step="0.01" /></label>
+          </div>
+          <div class="row-2">
+            <label class="fld"><span class="lab">Customer ID</span><input class="input" id="customer_id" value="" /></label>
+            <label class="fld"><span class="lab">Merchant ID</span><input class="input" id="merchant_id" value="" /></label>
+          </div>
+          <button class="btn btn-primary" id="scoreBtn" style="width:100%; justify-content:center; margin-top:6px">
+            <span class="btnlabel">Score transaction</span>
+          </button>
+        </div>
+
+        <div class="card card-pad" id="result">
+          <div class="result-empty" id="resultEmpty">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="1.5"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+            <div>Score a transaction to see the prediction, the features retrieved from the store, and the latency breakdown.</div>
+          </div>
+          <div id="resultBody" hidden></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Streaming demo ===== -->
+  <section id="stream">
+    <div class="wrap">
+      <div class="eyebrow reveal">Real-time</div>
+      <h2 class="section-title reveal">Watch a feature update live</h2>
+      <p class="lede reveal">This is what makes an <em>online</em> feature store different from a nightly batch job. We push a live transaction event for the selected customer through Feast's streaming path, then immediately re-score — and the customer's real-time features (and the fraud probability) move on the spot.</p>
+
+      <div class="card card-pad reveal" style="margin-top:26px">
+        <button class="btn btn-data" id="simBtn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+          <span class="btnlabel">Push a live event &amp; re-score</span>
+        </button>
+        <div id="simResult" style="margin-top:22px" hidden>
+          <div class="stream-grid">
+            <div class="stream-col">
+              <h4>Before</h4>
+              <div class="rt-card" id="rtBefore"></div>
+            </div>
+            <div class="stream-arrow">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+            </div>
+            <div class="stream-col">
+              <h4>After the pushed event</h4>
+              <div class="rt-card after" id="rtAfter"></div>
+            </div>
+          </div>
+          <p class="lat-total" id="simNote" style="margin-top:14px"></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Model card ===== -->
+  <section id="model">
+    <div class="wrap">
+      <div class="eyebrow reveal">The model</div>
+      <h2 class="section-title reveal">Honest numbers, leakage-safe features</h2>
+      <p class="lede reveal">Trained through Feast's point-in-time historical retrieval, so training and serving use identical feature definitions.</p>
+      <div class="metrics reveal" id="metrics" style="margin-top:22px"></div>
+      <div class="callout reveal">
+        <svg class="ic" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+        <div>
+          <h4>Trained on synthetic data — stated plainly</h4>
+          <p>The dataset is <b>PaySim</b>, a simulator, so these metrics won't transfer to real payment traffic. The point of this project is the <em>system</em> — point-in-time correctness, online serving, streaming freshness — not the model score. Target leakage (a fraud-rate feature computed over the label) was found and removed; see the model card in the repo.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Under the hood ===== -->
+  <section id="stack">
+    <div class="wrap">
+      <div class="eyebrow reveal">Under the hood</div>
+      <h2 class="section-title reveal">The stack</h2>
+      <div class="stack reveal" style="margin-top:18px">
+        <span class="chip"><span class="d" style="background:#38bdf8"></span>Feast feature store</span>
+        <span class="chip"><span class="d" style="background:#38bdf8"></span>Postgres / Neon online store</span>
+        <span class="chip"><span class="d" style="background:#22c55e"></span>FastAPI + Pydantic</span>
+        <span class="chip"><span class="d" style="background:#22c55e"></span>scikit-learn (HistGBM)</span>
+        <span class="chip"><span class="d" style="background:#f59e0b"></span>Kafka / Redpanda streaming</span>
+        <span class="chip"><span class="d" style="background:#93a3b8"></span>Prometheus metrics</span>
+        <span class="chip"><span class="d" style="background:#93a3b8"></span>Docker · Nginx · Render</span>
+      </div>
+      <ul class="feature-list reveal">
+        <li><svg class="ic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b>Point-in-time correctness</b> — every training row sees only features that existed before that transaction, with a 72-hour label-maturation delay on fraud signals.</span></li>
+        <li><svg class="ic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b>One feature definition</b> for training and serving via a shared Feast <span class="mono">FeatureService</span>, so serving can't silently drift from training.</span></li>
+        <li><svg class="ic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b>Graceful degradation</b> — if the online store is unavailable the API still scores from request-time features and flags the response.</span></li>
+        <li><svg class="ic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b>Observability</b> — per-stage latency, score distribution and streaming freshness are exported as Prometheus metrics.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    <div class="wrap">
+      <span>Built with Feast · FastAPI · scikit-learn. Synthetic PaySim data.</span>
+      <a href="https://github.com/brej-29/feast-feature-store-online-inference" target="_blank" rel="noopener">Source on GitHub →</a>
+    </div>
+  </footer>
+
+  <div class="toast" id="toast"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -14,7 +14,6 @@ Marked `integration`; excluded from the default unit test run (see
 pyproject.toml `-m "not integration"` in CI) because it requires Docker.
 """
 
-import os
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd

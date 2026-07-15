@@ -1,6 +1,5 @@
 from feast import FileSource
 
-
 # Point-in-time correct entity feature tables (see pipelines/build_entity_tables.py).
 customer_features_source = FileSource(
     name="customer_features_source",

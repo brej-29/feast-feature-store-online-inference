@@ -7,6 +7,7 @@ from typing import Dict, List
 
 import pandas as pd
 from kafka import KafkaConsumer
+from prometheus_client import start_http_server
 
 from pipelines.encoders import map_type_to_code
 from services.streaming.feast_push import push_customer_realtime
@@ -77,6 +78,10 @@ def main() -> None:
     group_id = os.getenv("KAFKA_GROUP_ID", "feast_fraud_consumer")
     batch_size = int(os.getenv("KAFKA_CONSUMER_BATCH_SIZE", "32"))
     poll_timeout_ms = int(os.getenv("KAFKA_POLL_TIMEOUT_MS", "1000"))
+    metrics_port = int(os.getenv("CONSUMER_METRICS_PORT", "9100"))
+
+    start_http_server(metrics_port)
+    logger.info("Started Prometheus metrics server", extra={"port": metrics_port})
 
     logger.info(
         "Starting Kafka consumer",

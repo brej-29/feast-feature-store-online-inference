@@ -13,6 +13,7 @@ logging.basicConfig(
 logger = logging.getLogger("feast_fraud.gradio")
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
+API_KEY = os.getenv("API_KEY")
 
 
 def call_predict_api(
@@ -43,8 +44,10 @@ def call_predict_api(
         extra={"url": url, "payload": payload},
     )
 
+    headers = {"X-API-Key": API_KEY} if API_KEY else {}
+
     try:
-        response = requests.post(url, json=payload, timeout=5)
+        response = requests.post(url, json=payload, headers=headers, timeout=5)
         response.raise_for_status()
         data = response.json()
 

@@ -1,9 +1,7 @@
-import os
 from pathlib import Path
 
 import pandas as pd
 import pytest
-
 
 PROCESSED_PATH = Path("data/processed/transactions_clean.parquet")
 

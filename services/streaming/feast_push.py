@@ -1,9 +1,11 @@
 import logging
 import os
+import time
 from typing import Optional
 
 import pandas as pd
 from feast import FeatureStore
+from prometheus_client import Counter, Gauge, Histogram
 
 logging.basicConfig(
     level=logging.INFO,
@@ -12,6 +14,23 @@ logging.basicConfig(
 logger = logging.getLogger("feast_fraud.streaming.feast_push")
 
 _FEATURE_STORE: Optional[FeatureStore] = None
+
+PUSH_SUCCESS_TOTAL = Counter(
+    "feast_push_success_total", "Successful pushes to the Feast online store."
+)
+PUSH_FAILURE_TOTAL = Counter(
+    "feast_push_failure_total", "Failed pushes to the Feast online store."
+)
+PUSH_LAST_SUCCESS_UNIXTIME = Gauge(
+    "feast_push_last_success_unixtime",
+    "Wall-clock time (unix seconds) of the last successful push.",
+)
+PUSH_EVENT_LAG_SECONDS = Histogram(
+    "feast_push_event_lag_seconds",
+    "Age of the newest event in a batch at push time -- the streaming "
+    "freshness/feature-staleness indicator (Kafka consume + processing lag).",
+    buckets=[1, 5, 15, 30, 60, 300, 900, 3600],
+)
 
 
 def get_feature_store() -> FeatureStore:
@@ -46,6 +65,12 @@ def push_customer_realtime(df: pd.DataFrame) -> None:
             extra={"rows": len(df)},
         )
         store.push("customer_realtime_push", df)
+        PUSH_SUCCESS_TOTAL.inc()
+        PUSH_LAST_SUCCESS_UNIXTIME.set(time.time())
+        newest_event = pd.to_datetime(df["event_timestamp"], utc=True).max()
+        lag_seconds = (pd.Timestamp.now(tz="UTC") - newest_event).total_seconds()
+        PUSH_EVENT_LAG_SECONDS.observe(max(lag_seconds, 0.0))
     except Exception:
+        PUSH_FAILURE_TOTAL.inc()
         logger.exception("feast_push_failed")
         raise

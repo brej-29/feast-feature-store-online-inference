@@ -1,12 +1,21 @@
-# Model Card — fraud scoring `hgb_v2_20260711`
+# Model Card — fraud scoring `hgb_v2_20260712`
 
 ## Summary
 
-Gradient-boosted trees (`sklearn.ensemble.HistGradientBoostingClassifier`)
-scoring the probability that an online payment transaction is fraudulent.
-Features are served by a Feast feature store; training data was assembled via
-`get_historical_features` (point-in-time joins) against the same
-`fraud_detection_v2` feature service used at serving time.
+Gradient-boosted trees (`sklearn.ensemble.HistGradientBoostingClassifier`,
+`class_weight="balanced"`) scoring the probability that an online payment
+transaction is fraudulent. Features are served by a Feast feature store;
+training data was assembled via `get_historical_features` (point-in-time
+joins) against the same `fraud_detection_v2` feature service used at serving
+time.
+
+`class_weight="balanced"` matters a lot at this prevalence (~0.34% fraud):
+unweighted, predicted probabilities collapsed to almost exactly 0 or 1 and no
+threshold reached 90% precision (`recall_at_precision_0.90 == 0.0`).
+Weighted, PR-AUC went 0.54 → 0.93 and `recall_at_precision_0.90` went 0.0 →
+0.84 on the same test window (see decision D010) -- this is a reweighted
+loss, not a post-hoc calibration, so it changed the model's ranking, not just
+its threshold.
 
 ## Data — read this first
 
@@ -31,16 +40,16 @@ Features are served by a Feast feature store; training data was assembled via
 
 | Metric | Value |
 |---|---|
-| PR-AUC | 0.4912 |
-| ROC-AUC | 0.6690 |
-| Recall @ precision ≥ 0.90 | 0.0000 |
-| Precision @ recall ≥ 0.50 | 0.7697 |
-| Brier score | 0.002308 |
+| PR-AUC | 0.9279 |
+| ROC-AUC | 0.9761 |
+| Recall @ precision ≥ 0.90 | 0.8424 |
+| Precision @ recall ≥ 0.50 | 0.9717 |
+| Brier score | 0.000917 |
 | Test fraud prevalence (PR-AUC floor) | 0.003383 |
-| Logistic-regression baseline PR-AUC | 0.0975 |
+| Logistic-regression baseline PR-AUC | 0.0944 |
 
-Operating threshold (max-F1 on test): `1.000000`
-(F1 = 0.6611).
+Operating threshold (max-F1 on test): `0.969646`
+(F1 = 0.8766).
 
 ## Features
 

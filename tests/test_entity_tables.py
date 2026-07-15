@@ -3,7 +3,6 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-
 ENTITY_FILES = [
     ("customer_id", Path("data/processed/customer_features.parquet")),
     ("merchant_id", Path("data/processed/merchant_features.parquet")),

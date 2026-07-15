@@ -12,6 +12,37 @@ Use reverse chronological order (newest at the top).
 
 ---
 
+## Step 6 – Phase 3 (start): deployment prep, pivot from HF Spaces to Render
+
+- **Date**: 2026-07-12
+- **Agent**: Claude Code (with human review)
+- **Context used**:
+  - context/07_DECISIONS.md (D011)
+- **Summary**:
+  - `deploy/run.sh` now runs `feast apply` + materialize on every container
+    boot (it never ran automatically before); a fresh container has no
+    committed registry, so this is required for any hosted deployment to
+    serve real predictions rather than degraded/default-only ones.
+  - Committed the 5 point-in-time entity feature parquet tables (~19MB) so
+    a freshly built container has offline data to materialize from.
+  - Attempted to create a Hugging Face Space (Docker SDK) and discovered
+    HF now requires a PRO subscription for Docker/Gradio Spaces on free
+    accounts (confirmed via API 402 response). Pivoted to Render.com's free
+    web service plan instead -- see D011 for the full reasoning and
+    trade-offs (cold starts on the free plan).
+  - Added `render.yaml` (Blueprint) and `docs/RENDER_DEPLOYMENT.md`;
+    `docs/HF_DEPLOYMENT.md` kept with a correction note for anyone with/
+    getting HF PRO.
+- **Files touched (high level)**:
+  - `deploy/run.sh`
+  - `data/processed/*_features.parquet` (5 files, newly committed)
+  - `render.yaml` (new), `docs/RENDER_DEPLOYMENT.md` (new)
+  - `docs/HF_DEPLOYMENT.md`
+- **Decisions referenced/added**:
+  - D011 – Deploy to Render.com instead of Hugging Face Spaces.
+
+---
+
 ## Template
 
 ```markdown

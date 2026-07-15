@@ -1,5 +1,11 @@
 # Hugging Face Spaces Deployment Guide
 
+> **2026-07 update**: Hugging Face now requires a **PRO subscription
+> ($9/month)** to run Docker or Gradio Spaces on free accounts -- only
+> static Spaces are free. This guide is kept for anyone with (or planning
+> to get) PRO. For a genuinely free deployment, see
+> [`docs/RENDER_DEPLOYMENT.md`](RENDER_DEPLOYMENT.md) instead (see D011).
+
 This repository is designed to run as a **single Docker container** on
 Hugging Face Spaces, exposing:
 

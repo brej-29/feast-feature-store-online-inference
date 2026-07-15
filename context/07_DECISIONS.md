@@ -367,3 +367,43 @@ Each decision should have:
   - The unweighted logistic-regression baseline is left as-is deliberately,
     so the model card can show the contrast (simple unweighted baseline vs.
     the imbalance-aware production model).
+
+---
+
+## D011 – Deploy to Render.com instead of Hugging Face Spaces
+
+- **Date**: 2026-07-12
+- **Status**: accepted
+- **Context**:
+  - D001/D002 assumed free Hugging Face Spaces (Docker) for deployment.
+  - As of 2026-07, Hugging Face restricted free accounts to **static**
+    Spaces only; running our Docker container now requires a **PRO
+    subscription ($9/month)** (confirmed via `create_repo(repo_type="space",
+    space_sdk="docker")` returning HTTP 402, and corroborated by Hugging
+    Face community forum reports of the same change). This breaks the
+    project's "$0/month" deployment story.
+- **Options considered**:
+  - **Option A** – Subscribe to HF PRO. Simple, no architecture change, but
+    contradicts the free-tier goal and requires an ongoing paid subscription.
+  - **Option B** – Deploy the same Docker image to Render.com's free web
+    service plan (no card required).
+    - Pros: genuinely free; Render also reads `$PORT` the same way HF did,
+      so the existing Dockerfile/`deploy/run.sh`/Nginx setup needed no
+      changes beyond a health-check path. Cons: free-plan services spin
+      down after ~15 min idle, so the first request after idle has a
+      30-60s cold start.
+  - **Option C** – Rewrite the UI for a genuinely-free host with a
+    different deployment model (e.g. Streamlit Community Cloud). Rejected:
+    throws away the working Gradio UI and FastAPI split for no real benefit.
+- **Decision**:
+  - Option B. Added `render.yaml` (Blueprint) and
+    `docs/RENDER_DEPLOYMENT.md`; `docs/HF_DEPLOYMENT.md` kept (with a
+    correction note) for anyone who does have/get HF PRO.
+- **Consequences / Follow-ups**:
+  - `deploy/run.sh` now runs `feast apply` + materialize on every container
+    boot (previously never ran automatically) since a fresh container has
+    no committed registry -- this was needed regardless of hosting choice,
+    just surfaced by actually going through deployment.
+  - README/demo copy should mention the cold-start honestly rather than
+    hide it -- consistent with the project's "state limitations plainly"
+    approach elsewhere (model card, D006).

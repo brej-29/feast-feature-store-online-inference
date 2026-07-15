@@ -1,0 +1,42 @@
+# Render Blueprint for the Feast fraud-detection stack.
+#
+# Deploys the same single-container image (Nginx + FastAPI + Gradio +
+# Prometheus, see Dockerfile / deploy/run.sh) used for the free-tier
+# deployment story. Render's free web service plan requires no payment
+# method and needs no Kaggle/HF-specific setup -- just a GitHub connection.
+#
+# Usage: https://dashboard.render.com/blueprints -> "New Blueprint Instance"
+# -> connect this repo. Render reads this file and provisions the service;
+# you'll be prompted to fill in the env vars marked `sync: false` below
+# (get these from your Neon project's connection details).
+services:
+  - type: web
+    name: feast-fraud-detection
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    envVars:
+      - key: FEAST_REPO_PATH
+        value: feature_repo
+      - key: MODEL_PATH
+        value: models/fraud_model_v2.joblib
+      - key: API_BASE_URL
+        value: http://127.0.0.1:8000
+      # Neon Postgres connection (Neon dashboard -> your project -> Connect).
+      # Leave POSTGRES_HOST unset to deploy first and wire Neon up later --
+      # the container degrades gracefully (serves from request-time features
+      # only) rather than failing to boot.
+      - key: POSTGRES_HOST
+        sync: false
+      - key: POSTGRES_PORT
+        value: "5432"
+      - key: POSTGRES_DB
+        sync: false
+      - key: POSTGRES_USER
+        sync: false
+      - key: POSTGRES_PASSWORD
+        sync: false
+      # Optional: protects /api/predict with an X-API-Key header once set.
+      - key: API_KEY
+        sync: false

@@ -48,7 +48,7 @@
       </div>
       <div class="stat-chips" id="heroStats">
         <div class="stat-chip"><div class="n mono">~8<span class="unit">ms</span></div><div class="l">model inference time</div></div>
-        <div class="stat-chip"><div class="n mono" id="statPrauc">0.93</div><div class="l">PR-AUC (synthetic test set)</div></div>
+        <div class="stat-chip"><div class="n mono" id="statPrauc">0.93</div><div class="l">PR-AUC (PaySim test window)</div></div>
         <div class="stat-chip"><div class="n mono">54</div><div class="l">features served per request</div></div>
         <div class="stat-chip"><div class="n mono" id="statModel">—</div><div class="l">model version</div></div>
       </div>
@@ -215,8 +215,8 @@
       <div class="callout reveal">
         <svg class="ic" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
         <div>
-          <h4>Trained on synthetic data — stated plainly</h4>
-          <p>The dataset is <b>PaySim</b>, a simulator, so these metrics won't transfer to real payment traffic. The point of this project is the <em>system</em> — point-in-time correctness, online serving, streaming freshness — not the model score. Target leakage (a fraud-rate feature computed over the label) was found and removed; see the model card in the repo.</p>
+          <h4>Why simulated data? Because real fraud data is confidential.</h4>
+          <p>Banks cannot release transaction-level fraud data, so the research standard is <b>PaySim</b> — a simulation generated from real mobile-money transaction logs from an African payment provider, preserving realistic transaction patterns, entity behaviour and fraud typologies (account-draining transfers, cash-out mules). Metrics won't transfer to production traffic; the engineering — point-in-time correctness, online serving, streaming freshness — does. Target leakage (a fraud-rate feature computed over the label itself) was found and removed during development; see the model card in the repo.</p>
         </div>
       </div>
     </div>
@@ -247,7 +247,7 @@
 
   <footer>
     <div class="wrap">
-      <span>Built with Feast · FastAPI · scikit-learn. Synthetic PaySim data.</span>
+      <span>Built with Feast · FastAPI · scikit-learn. PaySim data — the research-standard simulation of real mobile-money logs.</span>
       <a href="https://github.com/brej-29/feast-feature-store-online-inference" target="_blank" rel="noopener">Source on GitHub →</a>
     </div>
   </footer>

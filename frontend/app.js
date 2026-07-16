@@ -189,6 +189,22 @@
     </details>`;
   }
 
+  /* ---- Why-this-score contributions ---- */
+  function renderContribs(list) {
+    const maxAbs = Math.max(...list.map((c) => Math.abs(c.impact)), 1e-9);
+    const rows = list.map((c) => {
+      const up = c.impact > 0;
+      const pct = Math.min(100, (Math.abs(c.impact) / maxAbs) * 100);
+      return `<div class="ctr-row">
+        <span class="ctr-label" title="${esc(c.feature)}">${esc(c.label)}</span>
+        <span class="ctr-track"><span class="ctr-fill ${up ? "up" : "down"}" data-w="${pct}"></span></span>
+        <span class="ctr-val ${up ? "up" : "down"}">${up ? "+" : "−"}${fmt(Math.abs(c.impact) * 100, 1)}pp</span>
+      </div>`;
+    }).join("");
+    return `<div class="expl"><h4>Why this score</h4>${rows}
+      <div class="lat-total">How much each signal moved the probability, versus that signal at its baseline value. Red raises risk, green lowers it.</div></div>`;
+  }
+
   /* ---- Score ---- */
   async function score() {
     const btn = $("#scoreBtn"), lbl = btn.querySelector(".btnlabel");
@@ -239,6 +255,7 @@
       ${dbg.degraded ? `<div class="degraded-note">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
         <div>Online store unavailable — scored from request-time features and training defaults only.</div></div>` : ""}
+      ${dbg.top_contributors && dbg.top_contributors.length ? renderContribs(dbg.top_contributors) : ""}
       <div class="lat">
         <h4>Where the time went</h4>
         <div class="lat-bar"><span class="k">feature fetch</span><span class="track"><span class="fill fetch" id="lbFetch"></span></span><span class="v">${fmt(r.feature_fetch_ms, 1)} ms</span></div>
@@ -259,6 +276,7 @@
     requestAnimationFrame(() => {
       $("#lbFetch").style.width = fetchPct + "%";
       $("#lbInfer").style.width = inferPct + "%";
+      body.querySelectorAll(".ctr-fill").forEach((el) => { el.style.width = el.dataset.w + "%"; });
     });
   }
 

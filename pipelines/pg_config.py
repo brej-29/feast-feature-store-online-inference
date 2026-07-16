@@ -29,6 +29,19 @@ import shlex
 from typing import Dict, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
+# Load a local .env (if present) so `POSTGRES_URL` and friends are available
+# when the app is run directly (uvicorn / make demo / feast CLI) without the
+# caller having exported them. This is the single import every DB path goes
+# through (API, push helper, feast_apply/materialize). load_dotenv does NOT
+# override already-set env vars, so Docker/Render-provided env still wins and
+# a missing .env is a harmless no-op.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except Exception:  # pragma: no cover - dotenv optional at runtime
+    pass
+
 PG_KEYS = (
     "POSTGRES_HOST",
     "POSTGRES_PORT",

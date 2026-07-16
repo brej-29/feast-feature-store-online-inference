@@ -172,6 +172,13 @@ def test_predict_exposes_retrieved_features(model_bundle, monkeypatch):
     # a feature not returned by the store is marked as not-from-store
     assert rf["customer_profile_v2__fraud_rate_prior"]["from_store"] is False
     assert "amount" in body["debug_info"]["request_features"]
+    # explanation: a list of {feature,label,value,impact}, sorted by |impact|
+    tc = body["debug_info"]["top_contributors"]
+    assert isinstance(tc, list)
+    for c in tc:
+        assert {"feature", "label", "value", "impact"} <= set(c)
+    impacts = [abs(c["impact"]) for c in tc]
+    assert impacts == sorted(impacts, reverse=True)
 
 
 def test_demo_entities_has_scenarios_and_cold_start():

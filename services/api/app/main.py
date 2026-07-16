@@ -244,6 +244,67 @@ def _fetch_online_features(
     }
 
 
+_FRIENDLY_FEATURE = {
+    "amount": "Transaction amount",
+    "type_code": "Transaction type",
+    "txn_hour": "Hour of day",
+    "oldbalanceOrg": "Sender balance",
+    "oldbalanceDest": "Receiver balance",
+    "amount_over_orig_balance": "Amount vs. sender balance",
+}
+
+
+def _friendly(name: str) -> str:
+    if name in _FRIENDLY_FEATURE:
+        return _FRIENDLY_FEATURE[name]
+    short = name.split("__")[-1]
+    entity = name.split("__")[0].replace("_profile_v2", "").replace("_v1", "")
+    words = short.replace("_prior", "").replace("_", " ")
+    return f"{entity}: {words}".strip()
+
+
+def _explain_prediction(
+    bundle: Dict[str, Any], row: Dict[str, float], base_prob: float, top_k: int = 6
+) -> List[Dict[str, Any]]:
+    """Per-feature contributions for one prediction via batched occlusion.
+
+    For each feature whose value differs from its training default, we re-score
+    with just that feature reset to default; the drop/rise in probability is
+    that feature's contribution to *this* score. One batched predict_proba, so
+    it stays cheap (no SHAP dependency — important for the free-tier box).
+    """
+    names = bundle["feature_names"]
+    defaults = bundle["feature_defaults"]
+    rows = [row]
+    changed: List[str] = []
+    for name in names:
+        default = float(defaults.get(name, 0.0))
+        if row[name] == default:
+            continue  # can't contribute — already at baseline
+        occluded = dict(row)
+        occluded[name] = default
+        rows.append(occluded)
+        changed.append(name)
+    if not changed:
+        return []
+    frame = pd.DataFrame(rows, columns=names)
+    probs = bundle["model"].predict_proba(frame)[:, 1]
+    contributions = [
+        {
+            "feature": name,
+            "label": _friendly(name),
+            "value": row[name],
+            "impact": float(base_prob - probs[i + 1]),  # + raises risk, - lowers it
+        }
+        for i, name in enumerate(changed)
+    ]
+    # Drop noise-level entries (<0.1pp) so a low-risk score doesn't render a
+    # wall of +0.0pp rows; an empty list simply hides the "why" panel.
+    contributions = [c for c in contributions if abs(c["impact"]) >= 0.001]
+    contributions.sort(key=lambda c: abs(c["impact"]), reverse=True)
+    return contributions[:top_k]
+
+
 def _score_transaction(
     bundle: Dict[str, Any],
     entity_row: Dict[str, str],
@@ -299,6 +360,9 @@ def _score_transaction(
         for name in bundle["feast_feature_names"]
     }
     threshold = float(bundle["threshold"])
+    # Explanation computed outside the timed inference block above so it does
+    # not inflate the reported inference latency.
+    top_contributors = _explain_prediction(bundle, row, fraud_probability)
     return {
         "fraud_probability": fraud_probability,
         "is_fraud": fraud_probability >= threshold,
@@ -309,6 +373,7 @@ def _score_transaction(
         "missing": missing,
         "retrieved_features": retrieved,
         "request_features": request_features,
+        "top_contributors": top_contributors,
     }
 
 
@@ -452,6 +517,7 @@ async def predict(payload: PredictInput) -> PredictOutput:
             "missing_features": scored["missing"][:20],
             "retrieved_features": scored["retrieved_features"],
             "request_features": scored["request_features"],
+            "top_contributors": scored["top_contributors"],
         },
     )
 

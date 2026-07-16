@@ -252,39 +252,79 @@
       <h2 class="section-title reveal">What each feature means</h2>
       <p class="lede reveal">Every field shown in the "features the model actually saw" panel above comes from one of five entity profiles or the request itself. Here's what they represent.</p>
 
-      <div class="glossary reveal" style="margin-top:28px">
-        <div class="gcard">
-          <h4><span class="tag data">entity</span> Profile features <span class="gwho">(customer · merchant · device · account · geo-cell)</span></h4>
-          <p class="gnote">Computed once per entity from its transaction history — point-in-time correct, so a feature at time <span class="mono">t</span> only reflects transactions strictly before <span class="mono">t</span>.</p>
-          <dl class="gdl">
-            <dt><span class="mono">txn_count_prior</span></dt><dd>How many transactions this entity had before this one.</dd>
-            <dt><span class="mono">amount_sum_prior</span> / <span class="mono">amount_mean_prior</span> / <span class="mono">amount_max_prior</span></dt><dd>Total, average, and largest transaction amount seen so far.</dd>
-            <dt><span class="mono">unique_counterparty_count_prior</span></dt><dd>How many distinct customers/merchants this entity has transacted with — a sudden new counterparty is a common fraud signal.</dd>
-            <dt><span class="mono">flagged_rate_prior</span></dt><dd>Share of this entity's past transactions the rules engine auto-flagged as suspicious.</dd>
-            <dt><span class="mono">entity_age_hours</span></dt><dd>Hours since this entity's first-ever transaction — brand-new entities carry more risk and less history.</dd>
-            <dt><span class="mono">matured_txn_count_prior</span> / <span class="mono">fraud_txn_count_prior</span> / <span class="mono">fraud_rate_prior</span></dt><dd>Fraud history — but only counting transactions whose label had <b>matured</b> by a 72-hour delay, since real fraud confirmations arrive late. This is what keeps the fraud-rate feature honest instead of leaking the label (see D005 in the repo).</dd>
-          </dl>
+      <div class="gexplorer reveal" style="margin-top:28px">
+        <div class="gtree" id="gtree">
+
+          <div class="ggroup open" data-group="profile">
+            <button class="gparent" aria-expanded="true">
+              <svg class="gchev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+              <span class="tag data">entity</span>
+              <span class="gtitle">Profile features</span>
+              <span class="gcount">10 fields</span>
+            </button>
+            <div class="gchildren">
+              <label class="glab" for="entitySelect">Viewing as</label>
+              <select class="input gselect" id="entitySelect">
+                <option value="customer_profile_v2">customer</option>
+                <option value="merchant_profile_v2">merchant</option>
+                <option value="device_profile_v2">device</option>
+                <option value="account_profile_v2">account</option>
+                <option value="geocell_profile_v2">geo-cell</option>
+              </select>
+              <button class="gleaf" data-suffix="txn_count_prior" data-label="Transaction count" data-desc="How many transactions this entity had before this one — always counted strictly before the transaction being scored.">txn_count_prior</button>
+              <button class="gleaf" data-suffix="amount_sum_prior" data-label="Total amount seen" data-desc="Sum of every transaction amount this entity has had so far.">amount_sum_prior</button>
+              <button class="gleaf" data-suffix="amount_mean_prior" data-label="Average amount" data-desc="Average transaction amount for this entity — a large deviation from it is a common fraud signal.">amount_mean_prior</button>
+              <button class="gleaf" data-suffix="amount_max_prior" data-label="Largest amount seen" data-desc="The biggest single transaction this entity has made before now.">amount_max_prior</button>
+              <button class="gleaf" data-suffix="unique_counterparty_count_prior" data-label="Distinct counterparties" data-desc="How many different customers/merchants this entity has transacted with — a sudden brand-new counterparty is a common fraud signal.">unique_counterparty_count_prior</button>
+              <button class="gleaf" data-suffix="flagged_rate_prior" data-label="Rules-flagged rate" data-desc="Share of this entity's past transactions the rules engine auto-flagged as suspicious.">flagged_rate_prior</button>
+              <button class="gleaf" data-suffix="entity_age_hours" data-label="Entity age" data-desc="Hours since this entity's first-ever transaction — brand-new entities carry more risk and less history to judge by.">entity_age_hours</button>
+              <button class="gleaf" data-suffix="matured_txn_count_prior" data-label="Matured transaction count" data-desc="Transactions old enough (72h+) that their fraud label is considered final — the denominator for fraud_rate_prior.">matured_txn_count_prior</button>
+              <button class="gleaf" data-suffix="fraud_txn_count_prior" data-label="Matured fraud count" data-desc="How many of this entity's matured transactions were confirmed fraud.">fraud_txn_count_prior</button>
+              <button class="gleaf" data-suffix="fraud_rate_prior" data-label="Matured fraud rate" data-desc="fraud_txn_count_prior ÷ matured_txn_count_prior — deliberately delayed 72h since real fraud confirmations arrive late. This delay is what keeps the feature honest instead of leaking the label (see decision D005 in the repo).">fraud_rate_prior</button>
+            </div>
+          </div>
+
+          <div class="ggroup" data-group="realtime">
+            <button class="gparent" aria-expanded="false">
+              <svg class="gchev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+              <span class="tag accent">live</span>
+              <span class="gtitle">Real-time features</span>
+              <span class="gcount">4 fields</span>
+            </button>
+            <div class="gchildren" hidden>
+              <p class="ghint">Pushed the instant a transaction happens via Feast's <span class="mono">PushSource</span> — this is the "online" half of an online feature store. The streaming demo further up updates these live.</p>
+              <button class="gleaf" data-full="customer_realtime_v1__last_txn_amount" data-label="Last transaction amount" data-desc="Amount of this customer's most recent transaction.">last_txn_amount</button>
+              <button class="gleaf" data-full="customer_realtime_v1__last_txn_type_code" data-label="Last transaction type" data-desc="Encoded type of that last transaction: 1=PAYMENT, 2=TRANSFER, 3=CASH_OUT, 4=CASH_IN.">last_txn_type_code</button>
+              <button class="gleaf" data-full="customer_realtime_v1__last_txn_hour" data-label="Last transaction hour" data-desc="Hour of day (0–23) the last transaction happened.">last_txn_hour</button>
+              <button class="gleaf" data-full="customer_realtime_v1__last_txn_is_flagged" data-label="Last transaction flagged?" data-desc="Whether that last transaction was auto-flagged by the rules engine.">last_txn_is_flagged</button>
+            </div>
+          </div>
+
+          <div class="ggroup" data-group="request">
+            <button class="gparent" aria-expanded="false">
+              <svg class="gchev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+              <span class="tag">now</span>
+              <span class="gtitle">Request-time features</span>
+              <span class="gcount">6 fields</span>
+            </button>
+            <div class="gchildren" hidden>
+              <p class="ghint">Computed from the transaction itself — no store lookup needed, since these only exist once the request arrives.</p>
+              <button class="gleaf" data-full="amount" data-label="Transaction amount" data-desc="The amount of the transaction being scored, exactly as submitted.">amount</button>
+              <button class="gleaf" data-full="type_code" data-label="Transaction type" data-desc="Encoded transaction type: 1=PAYMENT, 2=TRANSFER, 3=CASH_OUT, 4=CASH_IN.">type_code</button>
+              <button class="gleaf" data-full="txn_hour" data-label="Hour of day" data-desc="The current hour (0–23) the transaction is being scored at.">txn_hour</button>
+              <button class="gleaf" data-full="oldbalanceOrg" data-label="Sender balance" data-desc="The sender's account balance immediately before this transaction.">oldbalanceOrg</button>
+              <button class="gleaf" data-full="oldbalanceDest" data-label="Receiver balance" data-desc="The receiver's account balance immediately before this transaction.">oldbalanceDest</button>
+              <button class="gleaf" data-full="amount_over_orig_balance" data-label="Amount ÷ sender balance" data-desc="The transaction amount as a fraction of the sender's balance. A value near or above 1.0 means &quot;drained the account&quot; — the single strongest signal in this dataset.">amount_over_orig_balance</button>
+            </div>
+          </div>
+
         </div>
 
-        <div class="gcard">
-          <h4><span class="tag accent">live</span> Real-time features <span class="gwho">(customer, streaming)</span></h4>
-          <p class="gnote">Pushed into the store the instant a transaction happens, via Feast's <span class="mono">PushSource</span> — this is the "online" part of an online feature store. The streaming demo above updates these live.</p>
-          <dl class="gdl">
-            <dt><span class="mono">last_txn_amount</span></dt><dd>Amount of this customer's most recent transaction.</dd>
-            <dt><span class="mono">last_txn_type_code</span></dt><dd>Encoded transaction type of that last transaction (1=PAYMENT, 2=TRANSFER, 3=CASH_OUT, 4=CASH_IN).</dd>
-            <dt><span class="mono">last_txn_hour</span></dt><dd>Hour of day (0–23) the last transaction happened.</dd>
-            <dt><span class="mono">last_txn_is_flagged</span></dt><dd>Whether that last transaction was auto-flagged by the rules engine.</dd>
-          </dl>
-        </div>
-
-        <div class="gcard">
-          <h4><span class="tag">now</span> Request-time features</h4>
-          <p class="gnote">Computed from the transaction itself — no store lookup needed, since these values only exist once the request arrives.</p>
-          <dl class="gdl">
-            <dt><span class="mono">amount</span> / <span class="mono">type_code</span> / <span class="mono">txn_hour</span></dt><dd>The transaction's own amount, encoded type, and hour of day.</dd>
-            <dt><span class="mono">oldbalanceOrg</span> / <span class="mono">oldbalanceDest</span></dt><dd>Sender's and receiver's account balance immediately before this transaction.</dd>
-            <dt><span class="mono">amount_over_orig_balance</span></dt><dd>Amount as a fraction of the sender's balance — a value near or above 1.0 means "drained the account," the single strongest signal in this dataset.</dd>
-          </dl>
+        <div class="gdetail" id="gdetail">
+          <div class="gdetail-empty">
+            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="1.5"><path d="M9 18l6-6-6-6"/></svg>
+            <div>Click any field on the left to see what it means.</div>
+          </div>
         </div>
       </div>
 

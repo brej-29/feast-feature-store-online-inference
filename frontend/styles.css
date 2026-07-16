@@ -158,16 +158,50 @@ section { padding: 76px 0; border-bottom: 1px solid var(--border); }
 .tag.data { background: var(--data-soft); color: var(--data); }
 .tag.accent { background: var(--accent-soft); color: var(--accent); }
 
-/* ---- Data glossary ---- */
-.glossary { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 22px; }
-.gcard { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }
-.gcard h4 { display: flex; align-items: center; gap: 9px; font-size: 15px; margin-bottom: 8px; flex-wrap: wrap; }
-.gwho { font-size: 12px; font-weight: 400; color: var(--text-dim); }
-.gnote { color: var(--text-muted); font-size: 13.5px; margin: 0 0 16px; }
-.gdl { margin: 0; }
-.gdl dt { font-size: 13px; color: var(--text); margin-top: 14px; margin-bottom: 4px; line-height: 1.5; }
-.gdl dt:first-of-type { margin-top: 0; }
-.gdl dd { margin: 0; color: var(--text-muted); font-size: 13.5px; line-height: 1.55; }
+/* ---- Data glossary: interactive tree + detail panel ---- */
+.gexplorer { display: grid; grid-template-columns: 340px 1fr; gap: 20px; align-items: start; }
+.gtree { display: flex; flex-direction: column; gap: 8px; }
+.ggroup { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.gparent {
+  width: 100%; display: flex; align-items: center; gap: 9px; cursor: pointer;
+  background: transparent; border: none; color: var(--text); font-family: var(--sans);
+  font-size: 13.5px; font-weight: 500; padding: 13px 14px; text-align: left;
+}
+.gparent:hover { background: var(--surface-2); }
+.gchev { color: var(--text-dim); transition: transform .2s var(--ease); flex: none; }
+.ggroup.open .gchev { transform: rotate(90deg); }
+.gtitle { flex: 1; }
+.gcount { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+.gchildren { padding: 4px 12px 14px; display: flex; flex-direction: column; gap: 5px; border-top: 1px solid var(--border); }
+.ghint { color: var(--text-muted); font-size: 12.5px; margin: 10px 2px 8px; line-height: 1.5; }
+.glab { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .05em; margin: 10px 2px 5px; display: block; }
+.gselect { margin-bottom: 8px; padding: 8px 10px; font-size: 13px; }
+.gleaf {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  font-family: var(--mono); font-size: 12.5px; color: var(--text-muted);
+  background: transparent; border: 1px solid transparent; border-radius: 7px;
+  padding: 8px 10px; transition: background .15s var(--ease), color .15s var(--ease), border-color .15s var(--ease);
+}
+.gleaf:hover { background: var(--surface-2); color: var(--text); }
+.gleaf.active { background: var(--data-soft); color: var(--data); border-color: rgba(56,189,248,0.35); font-weight: 500; }
+
+.gdetail {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 26px; min-height: 260px; position: sticky; top: 84px;
+}
+.gdetail-empty {
+  min-height: 210px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; gap: 12px; color: var(--text-dim); font-size: 14px;
+}
+.gdetail-name { font-family: var(--mono); font-size: 12px; color: var(--data); word-break: break-all; }
+.gdetail-label { font-size: 20px; font-weight: 600; margin: 8px 0 14px; }
+.gdetail-desc { color: var(--text-muted); font-size: 15px; line-height: 1.65; }
+.gdetail-desc .mono { color: var(--text); }
+
+@media (max-width: 780px) {
+  .gexplorer { grid-template-columns: 1fr; }
+  .gdetail { position: static; }
+}
 
 /* ---- Form --------------------------------------------------------------- */
 label.fld { display: block; margin-bottom: 15px; }

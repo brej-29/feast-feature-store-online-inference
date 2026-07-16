@@ -347,11 +347,59 @@
     setTimeout(revealAll, 4000); // ultimate failsafe: never lose content
   }
 
+  /* ---- Data glossary: accordion tree + detail panel ---- */
+  function initGlossary() {
+    const tree = $("#gtree");
+    if (!tree) return;
+    const detail = $("#gdetail");
+    const entitySelect = $("#entitySelect");
+    let lastLeaf = null; // remember the active leaf so the entity dropdown can live-update it
+
+    function showDetail(leaf) {
+      const label = leaf.dataset.label;
+      const desc = leaf.dataset.desc;
+      const full = leaf.dataset.full || `${entitySelect.value}__${leaf.dataset.suffix}`;
+      detail.innerHTML = `
+        <div class="gdetail-name">${esc(full)}</div>
+        <div class="gdetail-label">${esc(label)}</div>
+        <div class="gdetail-desc">${desc}</div>`;
+    }
+
+    tree.querySelectorAll(".gparent").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const group = btn.closest(".ggroup");
+        const wasOpen = group.classList.contains("open");
+        tree.querySelectorAll(".ggroup").forEach((g) => {
+          g.classList.remove("open");
+          g.querySelector(".gparent").setAttribute("aria-expanded", "false");
+          g.querySelector(".gchildren").hidden = true;
+        });
+        if (!wasOpen) {
+          group.classList.add("open");
+          btn.setAttribute("aria-expanded", "true");
+          group.querySelector(".gchildren").hidden = false;
+        }
+      });
+    });
+
+    tree.querySelectorAll(".gleaf").forEach((leaf) => {
+      leaf.addEventListener("click", () => {
+        tree.querySelectorAll(".gleaf.active").forEach((el) => el.classList.remove("active"));
+        leaf.classList.add("active");
+        lastLeaf = leaf.dataset.suffix ? leaf : null; // only profile leaves depend on the entity dropdown
+        showDetail(leaf);
+      });
+    });
+
+    entitySelect.addEventListener("change", () => { if (lastLeaf) showDetail(lastLeaf); });
+  }
+
   /* ---- Wire up ---- */
   $("#preset").addEventListener("change", (e) => { if (e.target.value !== "") applyPreset(+e.target.value); });
   $("#scoreBtn").addEventListener("click", score);
   $("#simBtn").addEventListener("click", simulate);
   initReveal();
+  initGlossary();
   loadStatus();
   loadPresets();
 })();

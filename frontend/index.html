@@ -245,6 +245,59 @@
     </div>
   </section>
 
+  <!-- ===== Data glossary ===== -->
+  <section id="data">
+    <div class="wrap">
+      <div class="eyebrow reveal">Reference</div>
+      <h2 class="section-title reveal">What each feature means</h2>
+      <p class="lede reveal">Every field shown in the "features the model actually saw" panel above comes from one of five entity profiles or the request itself. Here's what they represent.</p>
+
+      <div class="glossary reveal" style="margin-top:28px">
+        <div class="gcard">
+          <h4><span class="tag data">entity</span> Profile features <span class="gwho">(customer · merchant · device · account · geo-cell)</span></h4>
+          <p class="gnote">Computed once per entity from its transaction history — point-in-time correct, so a feature at time <span class="mono">t</span> only reflects transactions strictly before <span class="mono">t</span>.</p>
+          <dl class="gdl">
+            <dt><span class="mono">txn_count_prior</span></dt><dd>How many transactions this entity had before this one.</dd>
+            <dt><span class="mono">amount_sum_prior</span> / <span class="mono">amount_mean_prior</span> / <span class="mono">amount_max_prior</span></dt><dd>Total, average, and largest transaction amount seen so far.</dd>
+            <dt><span class="mono">unique_counterparty_count_prior</span></dt><dd>How many distinct customers/merchants this entity has transacted with — a sudden new counterparty is a common fraud signal.</dd>
+            <dt><span class="mono">flagged_rate_prior</span></dt><dd>Share of this entity's past transactions the rules engine auto-flagged as suspicious.</dd>
+            <dt><span class="mono">entity_age_hours</span></dt><dd>Hours since this entity's first-ever transaction — brand-new entities carry more risk and less history.</dd>
+            <dt><span class="mono">matured_txn_count_prior</span> / <span class="mono">fraud_txn_count_prior</span> / <span class="mono">fraud_rate_prior</span></dt><dd>Fraud history — but only counting transactions whose label had <b>matured</b> by a 72-hour delay, since real fraud confirmations arrive late. This is what keeps the fraud-rate feature honest instead of leaking the label (see D005 in the repo).</dd>
+          </dl>
+        </div>
+
+        <div class="gcard">
+          <h4><span class="tag accent">live</span> Real-time features <span class="gwho">(customer, streaming)</span></h4>
+          <p class="gnote">Pushed into the store the instant a transaction happens, via Feast's <span class="mono">PushSource</span> — this is the "online" part of an online feature store. The streaming demo above updates these live.</p>
+          <dl class="gdl">
+            <dt><span class="mono">last_txn_amount</span></dt><dd>Amount of this customer's most recent transaction.</dd>
+            <dt><span class="mono">last_txn_type_code</span></dt><dd>Encoded transaction type of that last transaction (1=PAYMENT, 2=TRANSFER, 3=CASH_OUT, 4=CASH_IN).</dd>
+            <dt><span class="mono">last_txn_hour</span></dt><dd>Hour of day (0–23) the last transaction happened.</dd>
+            <dt><span class="mono">last_txn_is_flagged</span></dt><dd>Whether that last transaction was auto-flagged by the rules engine.</dd>
+          </dl>
+        </div>
+
+        <div class="gcard">
+          <h4><span class="tag">now</span> Request-time features</h4>
+          <p class="gnote">Computed from the transaction itself — no store lookup needed, since these values only exist once the request arrives.</p>
+          <dl class="gdl">
+            <dt><span class="mono">amount</span> / <span class="mono">type_code</span> / <span class="mono">txn_hour</span></dt><dd>The transaction's own amount, encoded type, and hour of day.</dd>
+            <dt><span class="mono">oldbalanceOrg</span> / <span class="mono">oldbalanceDest</span></dt><dd>Sender's and receiver's account balance immediately before this transaction.</dd>
+            <dt><span class="mono">amount_over_orig_balance</span></dt><dd>Amount as a fraction of the sender's balance — a value near or above 1.0 means "drained the account," the single strongest signal in this dataset.</dd>
+          </dl>
+        </div>
+      </div>
+
+      <div class="callout reveal">
+        <svg class="ic" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+        <div>
+          <h4>Deliberately excluded: post-transaction balances</h4>
+          <p><span class="mono">newbalanceOrig</span> and <span class="mono">newbalanceDest</span> exist in the raw PaySim data but are never fed to the model — they describe the account state <em>after</em> the transaction completes, which a real-time scorer checking a payment before it clears could never actually see (decision D006 in the repo).</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <footer>
     <div class="wrap">
       <span>Built with Feast · FastAPI · scikit-learn. PaySim data — the research-standard simulation of real mobile-money logs.</span>

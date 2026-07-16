@@ -153,9 +153,21 @@ section { padding: 76px 0; border-bottom: 1px solid var(--border); }
 .flow-legend .item { border-left: 2px solid var(--border-strong); padding: 2px 0 2px 14px; }
 .flow-legend .item h4 { font-size: 15px; margin-bottom: 3px; display: flex; align-items: center; gap: 8px; }
 .flow-legend .item p { color: var(--text-muted); font-size: 14px; margin: 0; }
-.tag { font-family: var(--mono); font-size: 11px; padding: 2px 7px; border-radius: 5px; }
+.tag { font-family: var(--mono); font-size: 11px; padding: 2px 7px; border-radius: 5px;
+  background: rgba(148,163,184,0.14); color: var(--text-muted); }
 .tag.data { background: var(--data-soft); color: var(--data); }
 .tag.accent { background: var(--accent-soft); color: var(--accent); }
+
+/* ---- Data glossary ---- */
+.glossary { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 22px; }
+.gcard { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }
+.gcard h4 { display: flex; align-items: center; gap: 9px; font-size: 15px; margin-bottom: 8px; flex-wrap: wrap; }
+.gwho { font-size: 12px; font-weight: 400; color: var(--text-dim); }
+.gnote { color: var(--text-muted); font-size: 13.5px; margin: 0 0 16px; }
+.gdl { margin: 0; }
+.gdl dt { font-size: 13px; color: var(--text); margin-top: 14px; margin-bottom: 4px; line-height: 1.5; }
+.gdl dt:first-of-type { margin-top: 0; }
+.gdl dd { margin: 0; color: var(--text-muted); font-size: 13.5px; line-height: 1.55; }
 
 /* ---- Form --------------------------------------------------------------- */
 label.fld { display: block; margin-bottom: 15px; }

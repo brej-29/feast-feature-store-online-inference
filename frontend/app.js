@@ -254,7 +254,7 @@
       </div>
       ${dbg.degraded ? `<div class="degraded-note">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
-        <div>Online store unavailable — scored from request-time features and training defaults only.</div></div>` : ""}
+        <div>Online store unavailable — scored from request-time features and training defaults only.${dbg.degraded_reason ? `<br><span class="mono" style="font-size:11px;opacity:.8">${esc(dbg.degraded_reason)}</span>` : ""}</div></div>` : ""}
       ${dbg.top_contributors && dbg.top_contributors.length ? renderContribs(dbg.top_contributors) : ""}
       <div class="lat">
         <h4>Where the time went</h4>

@@ -320,11 +320,29 @@ def _score_transaction(
     degraded = False
     online_features: Dict[str, Optional[float]] = {}
     fetch_start = time.perf_counter()
-    try:
-        store = get_feature_store()
-        online_features = _fetch_online_features(store, bundle, entity_row)
-    except Exception:  # noqa: BLE001
-        logger.exception("online_feature_fetch_failed", extra={"entity_row": entity_row})
+    last_error: Optional[Exception] = None
+    # Managed free-tier Postgres (Neon) suspends its compute after a few
+    # minutes idle; the first connection after that can hang or drop instead
+    # of cleanly failing. One short retry rides out that wake-up instead of
+    # degrading the whole request over a transient cold-start.
+    for attempt in range(2):
+        try:
+            store = get_feature_store()
+            online_features = _fetch_online_features(store, bundle, entity_row)
+            last_error = None
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            global _FEATURE_STORE
+            _FEATURE_STORE = None  # drop a possibly-poisoned connection/pool
+            if attempt == 0:
+                time.sleep(0.6)
+    if last_error is not None:
+        logger.exception(
+            "online_feature_fetch_failed",
+            extra={"entity_row": entity_row, "error": str(last_error)},
+            exc_info=last_error,
+        )
         degraded = True
         DEGRADED_PREDICTIONS.inc()
     feature_fetch_s = time.perf_counter() - fetch_start
@@ -370,6 +388,7 @@ def _score_transaction(
         "feature_fetch_ms": feature_fetch_s * 1000.0,
         "inference_ms": inference_s * 1000.0,
         "degraded": degraded,
+        "degraded_reason": f"{type(last_error).__name__}: {last_error}" if last_error else None,
         "missing": missing,
         "retrieved_features": retrieved,
         "request_features": request_features,
@@ -512,6 +531,7 @@ async def predict(payload: PredictInput) -> PredictOutput:
         inference_ms=scored["inference_ms"],
         debug_info={
             "degraded": scored["degraded"],
+            "degraded_reason": scored["degraded_reason"],
             "entity_ids": entity_row,
             "missing_feature_count": len(scored["missing"]),
             "missing_features": scored["missing"][:20],
@@ -711,7 +731,8 @@ async def demo_simulate(payload: PredictInput) -> Dict[str, Any]:
             "degraded": True,
             "message": (
                 "The streaming demo needs the online store (Postgres/Neon), "
-                "which is currently unavailable."
+                "which is currently unavailable"
+                + (f": {before['degraded_reason']}" if before["degraded_reason"] else ".")
             ),
             "before": _realtime_view(before),
         }

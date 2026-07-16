@@ -264,7 +264,7 @@ def _friendly(name: str) -> str:
 
 
 def _explain_prediction(
-    bundle: Dict[str, Any], row: Dict[str, float], base_prob: float, top_k: int = 6
+    bundle: Dict[str, Any], row: Dict[str, float], base_prob: float, top_k: int = 8
 ) -> List[Dict[str, Any]]:
     """Per-feature contributions for one prediction via batched occlusion.
 
@@ -300,7 +300,7 @@ def _explain_prediction(
     ]
     # Drop noise-level entries (<0.1pp) so a low-risk score doesn't render a
     # wall of +0.0pp rows; an empty list simply hides the "why" panel.
-    contributions = [c for c in contributions if abs(c["impact"]) >= 0.001]
+    contributions = [c for c in contributions if abs(c["impact"]) >= 0.0001]
     contributions.sort(key=lambda c: abs(c["impact"]), reverse=True)
     return contributions[:top_k]
 

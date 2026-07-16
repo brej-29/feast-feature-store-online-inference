@@ -190,7 +190,26 @@
   }
 
   /* ---- Why-this-score contributions ---- */
-  function renderContribs(list) {
+  function contribSummary(list, fraud) {
+    const raising = list.filter((c) => c.impact > 0);
+    const lowering = list.filter((c) => c.impact < 0);
+    const names = (arr, n) => arr.slice(0, n).map((c) => `<b>${esc(c.label)}</b>`);
+    const join = (arr) => arr.length <= 1 ? arr.join("") : arr.slice(0, -1).join(", ") + " and " + arr[arr.length - 1];
+
+    if (!raising.length && !lowering.length) return "";
+    if (raising.length && !lowering.length) {
+      return `${fraud ? "Flagged mainly because of" : "Nudged toward suspicious mainly because of"} ${join(names(raising, 3))}` +
+        (raising.length > 3 ? `, plus ${raising.length - 3} more signal${raising.length - 3 > 1 ? "s" : ""}` : "") + ".";
+    }
+    if (lowering.length && !raising.length) {
+      return `Looks legitimate mainly because of ${join(names(lowering, 3))} — nothing here resembles this dataset's fraud pattern.`;
+    }
+    return `${join(names(raising, 2))} push${raising.length === 1 ? "es" : ""} the risk up, while ${join(names(lowering, 2))} ` +
+      `pull${lowering.length === 1 ? "s" : ""} it back down` +
+      (fraud ? " — but not enough to outweigh the risk." : ", landing below the decision threshold.");
+  }
+
+  function renderContribs(list, fraud) {
     const maxAbs = Math.max(...list.map((c) => Math.abs(c.impact)), 1e-9);
     const rows = list.map((c) => {
       const up = c.impact > 0;
@@ -201,7 +220,10 @@
         <span class="ctr-val ${up ? "up" : "down"}">${up ? "+" : "−"}${fmt(Math.abs(c.impact) * 100, 1)}pp</span>
       </div>`;
     }).join("");
-    return `<div class="expl"><h4>Why this score</h4>${rows}
+    const summary = contribSummary(list, fraud);
+    return `<div class="expl"><h4>Why this score</h4>
+      ${summary ? `<p class="expl-summary">${summary}</p>` : ""}
+      ${rows}
       <div class="lat-total">How much each signal moved the probability, versus that signal at its baseline value. Red raises risk, green lowers it.</div></div>`;
   }
 
@@ -255,7 +277,7 @@
       ${dbg.degraded ? `<div class="degraded-note">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
         <div>Online store unavailable — scored from request-time features and training defaults only.${dbg.degraded_reason ? `<br><span class="mono" style="font-size:11px;opacity:.8">${esc(dbg.degraded_reason)}</span>` : ""}</div></div>` : ""}
-      ${dbg.top_contributors && dbg.top_contributors.length ? renderContribs(dbg.top_contributors) : ""}
+      ${dbg.top_contributors && dbg.top_contributors.length ? renderContribs(dbg.top_contributors, fraud) : ""}
       <div class="lat">
         <h4>Where the time went</h4>
         <div class="lat-bar"><span class="k">feature fetch</span><span class="track"><span class="fill fetch" id="lbFetch"></span></span><span class="v">${fmt(r.feature_fetch_ms, 1)} ms</span></div>

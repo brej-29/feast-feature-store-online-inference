@@ -172,7 +172,8 @@ section { padding: 76px 0; border-bottom: 1px solid var(--border); }
 .ggroup.open .gchev { transform: rotate(90deg); }
 .gtitle { flex: 1; }
 .gcount { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
-.gchildren { padding: 4px 12px 14px; display: flex; flex-direction: column; gap: 5px; border-top: 1px solid var(--border); }
+.gchildren { padding: 4px 12px 14px; display: none; flex-direction: column; gap: 5px; border-top: 1px solid var(--border); }
+.ggroup.open .gchildren { display: flex; }
 .ghint { color: var(--text-muted); font-size: 12.5px; margin: 10px 2px 8px; line-height: 1.5; }
 .glab { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .05em; margin: 10px 2px 5px; display: block; }
 .gselect { margin-bottom: 8px; padding: 8px 10px; font-size: 13px; }
@@ -236,6 +237,8 @@ label.fld .lab { display: block; font-size: 13px; color: var(--text-muted); marg
   color: #fcd34d; font-size: 13px; }
 
 .lat, .expl { margin-top: 24px; }
+.expl-summary { font-size: 14px; color: var(--text); line-height: 1.55; margin: 0 0 16px; }
+.expl-summary b { color: var(--text); font-weight: 600; }
 .lat h4, .feat h4, .rt h4, .expl h4 { font-size: 13px; color: var(--text-muted); margin: 0 0 12px;
   text-transform: uppercase; letter-spacing: .08em; font-weight: 600; }
 

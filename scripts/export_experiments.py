@@ -64,8 +64,23 @@ def main() -> None:
         "",
         "✅ = the run whose artifact is committed under `models/` and served by the API.",
         "",
-        "The `class_weight` comparison is the D010 finding, re-runnable rather than "
-        "quoted: `python -m pipelines.train_model --class_weight none --no_save`.",
+        "## Reading these",
+        "",
+        "**`class_weight`** is the D010 finding, re-runnable rather than quoted from "
+        "memory: `python -m pipelines.train_model --class_weight none --no_save`. "
+        "Unweighted at ~0.3% prevalence, the model saturates and no threshold reaches "
+        "90% precision at all.",
+        "",
+        "**`features: full (6.3M)`** uses entity profiles built by the Spark pipeline "
+        "over the whole dataset instead of a 300k subsample "
+        "(`scripts/train_on_full_dataset.sh`), holding training rows constant so the "
+        "variable under test is feature richness rather than training-set size.",
+        "",
+        "Caveat worth stating plainly: the sample and full runs draw different row "
+        "samples, so their test windows are not identical and the headline metrics are "
+        "not a strict A/B. Read the full-dataset row as 'no ranking improvement, "
+        "materially better calibration' -- Brier drops and the operating threshold "
+        "lands near 0.5 instead of 0.97 -- not as a like-for-like win or loss.",
         "",
     ]
 

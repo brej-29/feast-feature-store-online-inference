@@ -408,6 +408,9 @@ def run(
                 "feature_service": FEATURE_SERVICE_NAME,
                 "model": "HistGradientBoostingClassifier",
                 "saved_as_production": save,
+                # Distinguishes the sample-built feature tables from the
+                # full-dataset Spark build (scripts/train_on_full_dataset.sh).
+                "feature_table_dir": os.getenv("FEATURE_TABLE_DIR", "../data/processed"),
             },
             metrics=result["metrics"],
             artifacts=[card_path, metrics_path] if save else [],

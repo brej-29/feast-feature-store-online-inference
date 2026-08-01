@@ -198,20 +198,25 @@ def run(
     label_delay_hours: int = DEFAULT_LABEL_DELAY_HOURS,
     jobs: Optional[List[EntityJob]] = None,
     shuffle_partitions: int = 64,
+    driver_memory: str = "4g",
+    coalesce: int = 0,
 ) -> None:
     spark = (
         SparkSession.builder.appName("feast-fraud-entity-tables")
         .config("spark.sql.shuffle.partitions", shuffle_partitions)
         .config("spark.sql.session.timeZone", "UTC")
+        # local[*] runs everything in the driver JVM, whose 1g default heap
+        # OOMs on the full dataset's window shuffles.
+        .config("spark.driver.memory", driver_memory)
         .getOrCreate()
     )
     try:
+        # Deliberately not cached: each entity job scans the source once, and
+        # caching 6.3M rows costs far more heap than the re-reads save.
         df = spark.read.parquet(transactions_path).withColumn(
             "_row_id", F.monotonically_increasing_id()
         )
-        df.cache()
-        total = df.count()
-        logger.info("Loaded transactions", extra={"path": transactions_path, "rows": total})
+        logger.info("Reading transactions", extra={"path": transactions_path})
         os.makedirs(out_dir, exist_ok=True)
 
         for job in jobs or ENTITY_JOBS:
@@ -223,10 +228,14 @@ def run(
                 label_delay_hours=label_delay_hours,
                 include_last_txn=job.include_last_txn,
             )
-            # One file per table keeps the output drop-in compatible with the
-            # pandas artifacts that Feast's FileSource reads.
+            # coalesce=1 yields a single file (drop-in for the pandas
+            # artifacts Feast's FileSource reads) but funnels every row
+            # through one task -- fine at demo scale, an OOM at full scale.
+            # Default 0 keeps the natural partitioning; Feast reads a
+            # directory of parquet parts fine.
             out_path = os.path.join(out_dir, job.out_name)
-            features.coalesce(1).write.mode("overwrite").parquet(out_path + ".d")
+            writer = features.coalesce(coalesce) if coalesce > 0 else features
+            writer.write.mode("overwrite").parquet(out_path + ".d")
             logger.info(
                 "Entity feature table written",
                 extra={
@@ -245,6 +254,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out_dir", default="data/processed/spark")
     parser.add_argument("--label_delay_hours", type=int, default=DEFAULT_LABEL_DELAY_HOURS)
     parser.add_argument("--shuffle_partitions", type=int, default=64)
+    parser.add_argument("--driver_memory", default="4g")
+    parser.add_argument(
+        "--coalesce",
+        type=int,
+        default=0,
+        help="0 = keep natural partitioning (needed at full scale); 1 = single "
+        "output file, convenient at demo scale.",
+    )
     return parser.parse_args()
 
 
@@ -255,6 +272,8 @@ def main() -> None:
         out_dir=args.out_dir,
         label_delay_hours=args.label_delay_hours,
         shuffle_partitions=args.shuffle_partitions,
+        driver_memory=args.driver_memory,
+        coalesce=args.coalesce,
     )
 
 

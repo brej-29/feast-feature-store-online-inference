@@ -161,6 +161,12 @@ def build_point_in_time_features(
     )
     left = g[[entity_col, "event_timestamp"]].copy()
     left["_asof_ts"] = left["event_timestamp"] - label_delay
+    # merge_asof demands identical dtypes on the merge keys. Parquet
+    # round-trips give microsecond-resolution timestamps (we coerce on write
+    # for Spark compatibility) while Timedelta arithmetic promotes to
+    # nanoseconds, so realign before merging.
+    if right["_known_ts"].dtype != left["_asof_ts"].dtype:
+        right["_known_ts"] = right["_known_ts"].astype(left["_asof_ts"].dtype)
     left["_row"] = np.arange(len(left))
     merged = pd.merge_asof(
         left.sort_values("_asof_ts", kind="stable"),

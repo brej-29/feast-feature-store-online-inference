@@ -103,6 +103,16 @@ def retrieve_training_frame(store: Any, entity_df: pd.DataFrame) -> pd.DataFrame
         "Historical features retrieved",
         extra={"rows": len(frame), "columns": len(frame.columns), "elapsed_s": round(elapsed, 1)},
     )
+    # Feast's point-in-time join drops rows silently rather than raising when
+    # the entity_df and the feature tables disagree on timestamp resolution
+    # (ns vs us) -- you get an empty/short frame and, without this, a model
+    # trained on nothing. Fail loudly instead.
+    if len(frame) != len(entity_df):
+        raise RuntimeError(
+            f"Point-in-time join returned {len(frame)} rows for {len(entity_df)} entity rows. "
+            "This usually means entity_df.event_timestamp and the feature tables have "
+            f"different datetime resolutions (entity_df is {entity_df['event_timestamp'].dtype})."
+        )
     return frame
 
 

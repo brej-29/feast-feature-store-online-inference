@@ -1,4 +1,4 @@
-# Model Card — fraud scoring `hgb_v2_20260712`
+# Model Card — fraud scoring `hgb_v2_20260801`
 
 ## Summary
 

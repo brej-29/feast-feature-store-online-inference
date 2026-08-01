@@ -45,6 +45,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 from pipelines.encoders import map_type_to_code
+from pipelines.pg_config import apply_postgres_url_env
 
 logging.basicConfig(
     level=logging.INFO,
@@ -110,6 +111,7 @@ def train_and_evaluate(
     feature_cols: List[str],
     test_fraction: float = 0.2,
     seed: int = 42,
+    class_weight: Optional[str] = "balanced",
 ) -> Dict[str, Any]:
     """Temporal-split training and evaluation. Pure pandas/sklearn (testable)."""
     frame = frame.sort_values(TS_COL, kind="stable").reset_index(drop=True)
@@ -139,14 +141,16 @@ def train_and_evaluate(
     # unweighted, the model saturates scores near exactly 0/1 and never
     # reaches a usable high-precision operating point (recall@precision=0.90
     # was 0.0). Weighted, PR-AUC goes 0.54 -> 0.93 and recall@precision=0.90
-    # goes 0.0 -> 0.84 on this test window (see D010).
+    # goes 0.0 -> 0.84 on this test window (see D010). Parameterised so that
+    # comparison can be re-run for real (--class_weight none) rather than
+    # quoted from memory.
     model = HistGradientBoostingClassifier(
         max_iter=300,
         learning_rate=0.1,
         max_depth=None,
         early_stopping=True,
         random_state=seed,
-        class_weight="balanced",
+        class_weight=class_weight,
     )
     model.fit(X_train, y_train)
     y_score = model.predict_proba(X_test)[:, 1]
@@ -282,6 +286,28 @@ realtime last-transaction features pushed from the Kafka consumer.
         f.write(card)
 
 
+def _log_to_mlflow(params: Dict[str, Any], metrics: Dict[str, Any], artifacts: List[str]) -> None:
+    """Log one training run to a local-file MLflow backend.
+
+    mlflow is a dev-only dependency (see requirements-dev.txt) -- the serving
+    container never imports this module, so a missing mlflow degrades to a
+    warning rather than breaking training.
+    """
+    try:
+        import mlflow
+    except ImportError:
+        logger.warning("mlflow_not_installed_skipping_tracking")
+        return
+
+    mlflow.set_experiment("fraud_feature_store")
+    with mlflow.start_run():
+        mlflow.log_params(params)
+        mlflow.log_metrics({k: v for k, v in metrics.items() if isinstance(v, (int, float))})
+        for path in artifacts:
+            if os.path.exists(path):
+                mlflow.log_artifact(path)
+
+
 def run(
     transactions_path: str,
     repo_path: str,
@@ -289,8 +315,17 @@ def run(
     max_rows: Optional[int],
     test_fraction: float,
     seed: int,
+    class_weight: Optional[str] = "balanced",
+    save: bool = True,
+    track: bool = True,
 ) -> Dict[str, Any]:
     from feast import FeatureStore  # deferred: heavy import
+
+    # Resolve POSTGRES_URL -> discrete POSTGRES_* (and load .env) before
+    # building the store, same as the API and the feast CLI scripts do.
+    # Without this, feature_store.yaml's ${POSTGRES_PORT} stays unsubstituted
+    # and RepoConfig fails to parse.
+    apply_postgres_url_env()
 
     transactions = pd.read_parquet(transactions_path)
     if max_rows is not None and len(transactions) > max_rows:
@@ -316,7 +351,11 @@ def run(
     )
 
     result = train_and_evaluate(
-        frame, feature_cols=feature_cols, test_fraction=test_fraction, seed=seed
+        frame,
+        feature_cols=feature_cols,
+        test_fraction=test_fraction,
+        seed=seed,
+        class_weight=class_weight,
     )
 
     model_version = f"hgb_v2_{datetime.now(timezone.utc).strftime('%Y%m%d')}"
@@ -335,32 +374,54 @@ def run(
         "metrics": result["metrics"],
     }
     model_path = os.path.join(out_dir, "fraud_model_v2.joblib")
-    joblib.dump(bundle, model_path)
-
+    card_path = os.path.join(out_dir, "MODEL_CARD.md")
     metrics_path = os.path.join(out_dir, "metrics_v2.json")
-    with open(metrics_path, "w", encoding="utf-8") as f:
-        json.dump({"model_version": model_version, **result["metrics"]}, f, indent=2)
 
-    _write_model_card(
-        os.path.join(out_dir, "MODEL_CARD.md"),
-        model_version=model_version,
-        metrics=result["metrics"],
-        feast_feature_cols=sorted(feast_feature_cols),
-        label_delay_note=(
-            "Fraud-label-derived features (`fraud_rate_prior`, ...) only count "
-            "transactions whose labels had matured (72h delay) at feature time."
-        ),
-    )
+    # save=False is used by comparison runs (e.g. --class_weight none) so an
+    # experiment variant never overwrites the served production artifact.
+    if save:
+        joblib.dump(bundle, model_path)
+        with open(metrics_path, "w", encoding="utf-8") as f:
+            json.dump({"model_version": model_version, **result["metrics"]}, f, indent=2)
+        _write_model_card(
+            card_path,
+            model_version=model_version,
+            metrics=result["metrics"],
+            feast_feature_cols=sorted(feast_feature_cols),
+            label_delay_note=(
+                "Fraud-label-derived features (`fraud_rate_prior`, ...) only count "
+                "transactions whose labels had matured (72h delay) at feature time."
+            ),
+        )
+    else:
+        logger.info("save=False; skipping artifact write (comparison run)")
+
+    if track:
+        _log_to_mlflow(
+            params={
+                "class_weight": class_weight or "none",
+                "seed": seed,
+                "test_fraction": test_fraction,
+                "max_rows": max_rows if max_rows is not None else "all",
+                "n_features": len(feature_cols),
+                "n_feast_features": len(feast_feature_cols),
+                "feature_service": FEATURE_SERVICE_NAME,
+                "model": "HistGradientBoostingClassifier",
+                "saved_as_production": save,
+            },
+            metrics=result["metrics"],
+            artifacts=[card_path, metrics_path] if save else [],
+        )
 
     logger.info(
         "Training complete",
         extra={
-            "model_path": model_path,
+            "model_path": model_path if save else None,
             "pr_auc": result["metrics"]["pr_auc"],
             "roc_auc": result["metrics"]["roc_auc"],
         },
     )
-    return {"model_path": model_path, "metrics": result["metrics"]}
+    return {"model_path": model_path if save else None, "metrics": result["metrics"]}
 
 
 def parse_args() -> argparse.Namespace:
@@ -373,6 +434,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_rows", type=int, default=None)
     parser.add_argument("--test_fraction", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--class_weight",
+        choices=["balanced", "none"],
+        default="balanced",
+        help="'none' reproduces the pre-D010 unweighted model for comparison.",
+    )
+    parser.add_argument(
+        "--no_save",
+        action="store_true",
+        help="Skip writing model/metrics/card -- use for comparison runs so they "
+        "don't overwrite the served production artifact.",
+    )
+    parser.add_argument("--no_mlflow", action="store_true", help="Skip MLflow tracking.")
     return parser.parse_args()
 
 
@@ -386,6 +460,9 @@ def main() -> None:
             max_rows=args.max_rows,
             test_fraction=args.test_fraction,
             seed=args.seed,
+            class_weight=None if args.class_weight == "none" else "balanced",
+            save=not args.no_save,
+            track=not args.no_mlflow,
         )
     except Exception:
         logger.exception("train_model_failed")

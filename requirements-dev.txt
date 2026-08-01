@@ -4,3 +4,5 @@ black==24.8.0
 locust==2.25.0
 mypy==1.11.2
 testcontainers[postgres]==4.8.1
+mlflow==2.16.2
+

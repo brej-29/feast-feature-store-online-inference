@@ -272,6 +272,10 @@
           </span>
           <p>Probability <span class="mono">${fmt(p, 4)}</span> vs. decision threshold <span class="thresh">${fmt(r.threshold, 3)}</span>.</p>
           <p class="thresh">model ${esc(r.model_version)}</p>
+          ${dbg.shadow ? `<p class="thresh">shadow · challenger <span class="mono">${esc(dbg.shadow.model_version)}</span>
+            scored <span class="mono">${fmt(dbg.shadow.fraud_probability, 4)}</span>
+            (${dbg.shadow.agrees_with_champion ? "agrees" : "<b style='color:var(--warn)'>disagrees</b>"}) —
+            logged for comparison, never served</p>` : ""}
         </div>
       </div>
       ${dbg.degraded ? `<div class="degraded-note">

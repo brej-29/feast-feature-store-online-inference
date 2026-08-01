@@ -328,6 +328,7 @@ def run(
     class_weight: Optional[str] = "balanced",
     save: bool = True,
     track: bool = True,
+    model_name: str = "fraud_model_v2",
 ) -> Dict[str, Any]:
     from feast import FeatureStore  # deferred: heavy import
 
@@ -368,7 +369,13 @@ def run(
         class_weight=class_weight,
     )
 
-    model_version = f"hgb_v2_{datetime.now(timezone.utc).strftime('%Y%m%d')}"
+    # Non-default artifacts (e.g. a shadow challenger) carry their name in the
+    # version, so champion and challenger are distinguishable in API responses
+    # and Prometheus labels rather than both reading "hgb_v2_<today>".
+    _stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+    model_version = (
+        f"hgb_v2_{_stamp}" if model_name == "fraud_model_v2" else f"{model_name}_{_stamp}"
+    )
     os.makedirs(out_dir, exist_ok=True)
 
     bundle = {
@@ -383,9 +390,14 @@ def run(
         "threshold": result["threshold"],
         "metrics": result["metrics"],
     }
-    model_path = os.path.join(out_dir, "fraud_model_v2.joblib")
-    card_path = os.path.join(out_dir, "MODEL_CARD.md")
-    metrics_path = os.path.join(out_dir, "metrics_v2.json")
+    stem = model_name
+    model_path = os.path.join(out_dir, f"{stem}.joblib")
+    card_path = os.path.join(
+        out_dir, "MODEL_CARD.md" if stem == "fraud_model_v2" else f"{stem}_CARD.md"
+    )
+    metrics_path = os.path.join(
+        out_dir, "metrics_v2.json" if stem == "fraud_model_v2" else f"{stem}_metrics.json"
+    )
 
     # save=False is used by comparison runs (e.g. --class_weight none) so an
     # experiment variant never overwrites the served production artifact.
@@ -460,6 +472,12 @@ def parse_args() -> argparse.Namespace:
         "don't overwrite the served production artifact.",
     )
     parser.add_argument("--no_mlflow", action="store_true", help="Skip MLflow tracking.")
+    parser.add_argument(
+        "--model_name",
+        default="fraud_model_v2",
+        help="Artifact stem. Use a distinct name (e.g. fraud_model_challenger) to "
+        "train a shadow model without overwriting the served champion.",
+    )
     return parser.parse_args()
 
 
@@ -476,6 +494,7 @@ def main() -> None:
             class_weight=None if args.class_weight == "none" else "balanced",
             save=not args.no_save,
             track=not args.no_mlflow,
+            model_name=args.model_name,
         )
     except Exception:
         logger.exception("train_model_failed")

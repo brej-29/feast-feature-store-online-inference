@@ -86,11 +86,37 @@ DEGRADED_PREDICTIONS = Counter(
     "Predictions served without online features (feature store unavailable).",
 )
 
+# --- Shadow (champion/challenger) -----------------------------------------
+# The challenger scores the same request but never influences the response;
+# these metrics are how you decide whether it is safe to promote.
+SHADOW_PREDICTIONS = Counter(
+    "shadow_predictions_total", "Requests also scored by the challenger model."
+)
+SHADOW_FAILURES = Counter(
+    "shadow_failures_total", "Challenger scoring errors (never affect the response)."
+)
+SHADOW_DISAGREEMENTS = Counter(
+    "shadow_disagreement_total",
+    "Requests where champion and challenger reached opposite fraud decisions.",
+)
+SHADOW_SCORE_DELTA = Histogram(
+    "shadow_score_delta",
+    "challenger_probability - champion_probability.",
+    buckets=[-1.0, -0.5, -0.2, -0.05, -0.01, 0.01, 0.05, 0.2, 0.5, 1.0],
+)
+SHADOW_INFERENCE_LATENCY = Histogram(
+    "shadow_inference_seconds", "Challenger inference latency (excluded from the response)."
+)
+
 _FEATURE_STORE: Optional[FeatureStore] = None
 _MODEL_BUNDLE: Optional[Dict[str, Any]] = None
 
 FEAST_REPO_PATH = os.getenv("FEAST_REPO_PATH", "feature_repo")
 MODEL_PATH = os.getenv("MODEL_PATH", os.path.join("models", "fraud_model_v2.joblib"))
+# Optional challenger. Unset (the default) disables shadow scoring entirely.
+CHALLENGER_MODEL_PATH = os.getenv("CHALLENGER_MODEL_PATH", "")
+_CHALLENGER_BUNDLE: Optional[Dict[str, Any]] = None
+_CHALLENGER_LOAD_FAILED = False
 
 # If API_KEY is unset, auth is disabled (local dev / tests). If set, callers
 # must send a matching X-API-Key header. Read at request time (not import
@@ -172,6 +198,92 @@ def get_model_bundle() -> Dict[str, Any]:
         logger.info("Loading model bundle", extra={"model_path": MODEL_PATH})
         _MODEL_BUNDLE = joblib.load(MODEL_PATH)
     return _MODEL_BUNDLE
+
+
+def get_challenger_bundle() -> Optional[Dict[str, Any]]:
+    """Load the challenger model, or None if shadow scoring isn't configured.
+
+    A challenger that fails to load must never take the API down with it -- the
+    failure is recorded once and shadow scoring stays off for the process.
+    """
+    global _CHALLENGER_BUNDLE, _CHALLENGER_LOAD_FAILED
+    path = os.getenv("CHALLENGER_MODEL_PATH", CHALLENGER_MODEL_PATH)
+    if not path or _CHALLENGER_LOAD_FAILED:
+        return None
+    if _CHALLENGER_BUNDLE is None:
+        try:
+            # joblib.load unpickles, i.e. it can execute arbitrary code. Both
+            # model paths are operator-supplied config pointing at artifacts
+            # this repo trains and commits -- never at user input. Treat
+            # MODEL_PATH/CHALLENGER_MODEL_PATH as trusted config, same as a
+            # database URL.
+            _CHALLENGER_BUNDLE = joblib.load(path)
+            logger.info(
+                "Loaded challenger model for shadow scoring",
+                extra={"path": path, "version": _CHALLENGER_BUNDLE.get("model_version")},
+            )
+        except Exception:  # noqa: BLE001
+            _CHALLENGER_LOAD_FAILED = True
+            logger.exception("challenger_load_failed_shadow_disabled", extra={"path": path})
+            return None
+    return _CHALLENGER_BUNDLE
+
+
+def _shadow_score(
+    online_features: Dict[str, Optional[float]],
+    request_features: Dict[str, float],
+    champion_is_fraud: bool,
+) -> Optional[Dict[str, Any]]:
+    """Score the challenger on the SAME features, for comparison only.
+
+    Reuses the features already fetched for the champion, so shadow scoring
+    costs no extra database round-trip. Every failure path is swallowed: a
+    broken challenger must not change or delay the served prediction.
+
+    ponytail: runs inline on the request thread. Fine at demo traffic and it
+    keeps the deployment single-process; a high-QPS service would push this
+    onto a queue so challenger latency can never touch the response.
+    """
+    challenger = get_challenger_bundle()
+    if challenger is None:
+        return None
+    try:
+        start = time.perf_counter()
+        defaults = challenger["feature_defaults"]
+        row = {
+            name: float(
+                request_features[name]
+                if name in request_features
+                else (
+                    online_features.get(name)
+                    if online_features.get(name) is not None
+                    else defaults.get(name, 0.0)
+                )
+            )
+            for name in challenger["feature_names"]
+        }
+        frame = pd.DataFrame([row], columns=challenger["feature_names"])
+        prob = float(challenger["model"].predict_proba(frame)[0, 1])
+        elapsed = time.perf_counter() - start
+
+        threshold = float(challenger["threshold"])
+        is_fraud = prob >= threshold
+        SHADOW_PREDICTIONS.inc()
+        SHADOW_INFERENCE_LATENCY.observe(elapsed)
+        if is_fraud != champion_is_fraud:
+            SHADOW_DISAGREEMENTS.inc()
+        return {
+            "model_version": challenger.get("model_version", "unknown"),
+            "fraud_probability": prob,
+            "is_fraud": is_fraud,
+            "threshold": threshold,
+            "agrees_with_champion": is_fraud == champion_is_fraud,
+            "inference_ms": elapsed * 1000.0,
+        }
+    except Exception:  # noqa: BLE001
+        SHADOW_FAILURES.inc()
+        logger.exception("shadow_scoring_failed")
+        return None
 
 
 def _derive_entity_ids(entity_ids: Dict[str, Any]) -> Dict[str, str]:
@@ -393,6 +505,9 @@ def _score_transaction(
         "retrieved_features": retrieved,
         "request_features": request_features,
         "top_contributors": top_contributors,
+        # Raw values, so shadow scoring can reuse them instead of paying for a
+        # second online-store round-trip.
+        "online_features": online_features,
     }
 
 
@@ -508,7 +623,15 @@ async def predict(payload: PredictInput) -> PredictOutput:
     request_features = _build_request_features(payload.request)
     scored = _score_transaction(bundle, entity_row, request_features)
 
+    # Champion decides; challenger only observes. Measured before latency_ms so
+    # the reported figure reflects what the caller actually waited for on the
+    # serving path.
     latency_ms = (time.perf_counter() - start) * 1000.0
+    shadow = _shadow_score(
+        scored["online_features"], scored["request_features"], scored["is_fraud"]
+    )
+    if shadow:
+        SHADOW_SCORE_DELTA.observe(shadow["fraud_probability"] - scored["fraud_probability"])
 
     logger.info(
         "prediction_served",
@@ -538,6 +661,7 @@ async def predict(payload: PredictInput) -> PredictOutput:
             "retrieved_features": scored["retrieved_features"],
             "request_features": scored["request_features"],
             "top_contributors": scored["top_contributors"],
+            "shadow": shadow,
         },
     )
 

@@ -47,3 +47,7 @@ services:
       # Optional: protects /api/predict with an X-API-Key header once set.
       - key: API_KEY
         sync: false
+      # Optional shadow/challenger model -- scored alongside the champion for
+      # comparison, never served. Leave unset to disable.
+      - key: CHALLENGER_MODEL_PATH
+        sync: false

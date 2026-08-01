@@ -1,0 +1,18 @@
+{
+  "model_version": "fraud_model_challenger_20260801",
+  "test_rows": 60000,
+  "test_fraud_rate": 0.0033833333333333332,
+  "pr_auc": 0.5439421957734052,
+  "roc_auc": 0.6997361186958406,
+  "brier_score": 0.0029698721739210253,
+  "recall_at_precision_0.90": 0.0,
+  "recall_at_precision_0.95": 0.0,
+  "precision_at_recall_0.50": 0.8108108108108109,
+  "threshold_max_f1": 0.9999999991958901,
+  "f1_at_threshold": 0.6898395721925135,
+  "baseline_prevalence_pr_auc": 0.0033833333333333332,
+  "baseline_logreg_pr_auc": 0.09439129420507883,
+  "baseline_logreg_roc_auc": 0.7611198677034642,
+  "train_rows": 240000,
+  "split_time": "2026-06-26 04:00:00+00:00"
+}

@@ -199,3 +199,90 @@ def test_demo_simulate_degrades_without_store(model_bundle, monkeypatch):
     body = client.post("/api/demo/simulate", json=PAYLOAD).json()
     assert body["degraded"] is True
     assert "online store" in body["message"].lower()
+
+
+# --- Shadow scoring (champion/challenger) ---------------------------------
+# The contract worth defending: the challenger observes, it never decides, and
+# it can never take the endpoint down.
+
+
+@pytest.fixture()
+def _reset_challenger(monkeypatch):
+    monkeypatch.setattr(api_main, "_CHALLENGER_BUNDLE", None)
+    monkeypatch.setattr(api_main, "_CHALLENGER_LOAD_FAILED", False)
+    yield
+    monkeypatch.setattr(api_main, "_CHALLENGER_BUNDLE", None)
+    monkeypatch.setattr(api_main, "_CHALLENGER_LOAD_FAILED", False)
+
+
+def _no_store(monkeypatch):
+    monkeypatch.setattr(
+        api_main, "get_feature_store", lambda: (_ for _ in ()).throw(RuntimeError("no store"))
+    )
+
+
+def test_shadow_absent_when_not_configured(model_bundle, monkeypatch, _reset_challenger):
+    monkeypatch.delenv("CHALLENGER_MODEL_PATH", raising=False)
+    monkeypatch.setattr(api_main, "CHALLENGER_MODEL_PATH", "")
+    _no_store(monkeypatch)
+    body = client.post("/api/predict", json=PAYLOAD).json()
+    assert body["debug_info"]["shadow"] is None
+
+
+def test_shadow_reports_without_changing_the_decision(
+    model_bundle, monkeypatch, _reset_challenger
+):
+    """The challenger returns a sentinel probability the champion cannot
+    produce, so we can prove the served score is the champion's."""
+    SENTINEL = 0.4242
+
+    class SentinelModel:
+        def predict_proba(self, frame):
+            return np.array([[1.0 - SENTINEL, SENTINEL]])
+
+    challenger = dict(model_bundle)
+    challenger["model"] = SentinelModel()
+    challenger["model_version"] = "challenger_v1"
+    challenger["threshold"] = 0.1  # sentinel clears it -> challenger says fraud
+    monkeypatch.setattr(api_main, "_CHALLENGER_BUNDLE", challenger)
+    monkeypatch.setattr(api_main, "CHALLENGER_MODEL_PATH", "in-memory")
+    _no_store(monkeypatch)
+
+    body = client.post("/api/predict", json=PAYLOAD).json()
+    shadow = body["debug_info"]["shadow"]
+    assert shadow["model_version"] == "challenger_v1"
+    assert shadow["fraud_probability"] == SENTINEL
+    assert shadow["is_fraud"] is True
+    # The served verdict is the champion's -- the challenger's score never
+    # leaks into the response fields a caller acts on.
+    assert body["model_version"] == "test_v0"
+    assert body["fraud_probability"] != SENTINEL
+    assert shadow["agrees_with_champion"] is (body["is_fraud"] is True)
+
+
+def test_shadow_failure_never_breaks_the_response(model_bundle, monkeypatch, _reset_challenger):
+    class Exploding:
+        def predict_proba(self, frame):
+            raise RuntimeError("challenger is broken")
+
+    challenger = dict(model_bundle)
+    challenger["model"] = Exploding()
+    monkeypatch.setattr(api_main, "_CHALLENGER_BUNDLE", challenger)
+    monkeypatch.setattr(api_main, "CHALLENGER_MODEL_PATH", "in-memory")
+    _no_store(monkeypatch)
+
+    response = client.post("/api/predict", json=PAYLOAD)
+    assert response.status_code == 200
+    assert response.json()["debug_info"]["shadow"] is None
+
+
+def test_unloadable_challenger_disables_shadow_quietly(
+    model_bundle, monkeypatch, _reset_challenger
+):
+    monkeypatch.setattr(api_main, "CHALLENGER_MODEL_PATH", "does/not/exist.joblib")
+    monkeypatch.setenv("CHALLENGER_MODEL_PATH", "does/not/exist.joblib")
+    _no_store(monkeypatch)
+    response = client.post("/api/predict", json=PAYLOAD)
+    assert response.status_code == 200
+    assert response.json()["debug_info"]["shadow"] is None
+    assert api_main._CHALLENGER_LOAD_FAILED is True

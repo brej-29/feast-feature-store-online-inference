@@ -1,0 +1,5 @@
+# Offline/CI ONLY -- deliberately NOT in requirements.txt.
+# pyspark needs a JVM; the serving container runs on a 512MB free-tier box
+# where Spark would neither fit nor belong in a request path. See
+# pipelines/build_entity_tables_spark.py.
+pyspark==3.5.3

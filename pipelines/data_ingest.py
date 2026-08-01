@@ -291,7 +291,13 @@ def run(
     profile_path = os.path.join(out_dir, "data_profile.json")
 
     logger.info("Writing cleaned parquet", extra={"path": parquet_path})
-    df_clean.to_parquet(parquet_path, index=False)
+    # coerce_timestamps="us": pandas/pyarrow default to nanosecond timestamps,
+    # which Spark 3.5 refuses to read ("Illegal Parquet type: INT64
+    # (TIMESTAMP(NANOS,true))"). Microseconds are the interop-safe precision
+    # and far finer than this hourly-resolution data needs.
+    df_clean.to_parquet(
+        parquet_path, index=False, coerce_timestamps="us", allow_truncated_timestamps=True
+    )
 
     _write_schema(df_clean, schema_path)
     _write_profile(df_clean, profile_path)

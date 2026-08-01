@@ -237,7 +237,11 @@ def run(
             include_last_txn=job.include_last_txn,
         )
         out_path = os.path.join(out_dir, job.out_name)
-        features.to_parquet(out_path, index=False)
+        # Microsecond timestamps keep these readable by Spark (see the same
+        # note in pipelines/data_ingest.py).
+        features.to_parquet(
+            out_path, index=False, coerce_timestamps="us", allow_truncated_timestamps=True
+        )
         logger.info(
             "Entity feature table written",
             extra={

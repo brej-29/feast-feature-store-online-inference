@@ -54,3 +54,7 @@ Thumbs.db
 # MLflow local tracking store (regenerate with pipelines/train_model.py)
 mlruns/
 mlartifacts/
+
+# Spark container pip cache (scripts/spark_run.sh)
+.spark-deps/
+data/processed/spark/

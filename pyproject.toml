@@ -38,6 +38,7 @@ combine-as-imports = true
 [tool.pytest.ini_options]
 markers = [
     "integration: requires Docker (Testcontainers); slower, run separately from unit tests",
+    "spark: requires a JVM + pyspark (requirements-spark.txt); offline pipeline only",
 ]
 
 [tool.mypy]
